@@ -86,9 +86,40 @@
   const SKIP_TAGS = new Set(['SCRIPT','STYLE','NOSCRIPT','IFRAME','INPUT','TEXTAREA',
     'NAV','ASIDE','TABLE','FIGURE','CODE','PRE','SELECT','BUTTON','FORM']);
   const SKIP_ROLES = new Set(['navigation','contentinfo','complementary','search']);
+  const MATH_CLASS_HINTS = ['math','katex','mathjax','mjx','equation','formula','latex'];
+  const CHAT_RESPONSE_SELECTORS = [
+    '[data-message-author-role="assistant"]',
+    '[data-testid*="assistant"]',
+    '[class*="assistant"]',
+    '[class*="response"]',
+    '[class*="markdown"]',
+    '[class*="prose"]',
+    'article'
+  ];
+
+  function isMathLikeText(text) {
+    const t = (text || '').trim();
+    if (!t) return false;
+    if (t.length > 180 && /[∑∫√π∞≈≠≤≥]/.test(t)) return true;
+    if (/\\\((.|\n)+\\\)|\\\[(.|\n)+\\\]|\\frac|\\sum|\\int|\\sqrt|\\begin\{.*\}/.test(t)) return true;
+    const symbolHits = (t.match(/[∑∫√π∞≈≠≤≥±×÷]/g) || []).length;
+    if (symbolHits >= 4 && symbolHits * 8 > t.length) return true;
+    return false;
+  }
+
+  function isMathElement(el) {
+    if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
+    const tag = (el.tagName || '').toLowerCase();
+    if (tag === 'math' || tag === 'mjx-container') return true;
+    const cls = (el.className || '').toString().toLowerCase();
+    if (MATH_CLASS_HINTS.some(h => cls.includes(h))) return true;
+    const attrs = `${el.getAttribute('data-testid') || ''} ${el.getAttribute('aria-label') || ''}`.toLowerCase();
+    return MATH_CLASS_HINTS.some(h => attrs.includes(h));
+  }
 
   function shouldSkip(el) {
     if (SKIP_TAGS.has(el.tagName)) return true;
+    if (isMathElement(el)) return true;
     const role = el.getAttribute('role');
     if (role && SKIP_ROLES.has(role)) return true;
     const id = (el.id||'').toLowerCase();
@@ -98,6 +129,18 @@
   }
 
   function getRoot() {
+    // 0. AI chat pages: prefer latest assistant response block
+    const chatCandidates = Array.from(document.querySelectorAll(CHAT_RESPONSE_SELECTORS.join(',')))
+      .filter(el => {
+        if (shouldSkip(el)) return false;
+        const txt = (el.innerText || '').trim();
+        if (txt.length < 120) return false;
+        if (isMathLikeText(txt)) return false;
+        const rect = el.getBoundingClientRect();
+        return rect.width > 150 && rect.height > 40;
+      });
+    if (chatCandidates.length) return chatCandidates[chatCandidates.length - 1];
+
     // 1. Semantic tags
     const semantic = document.querySelector('article, main, [role="main"]');
     if (semantic) return semantic;
@@ -161,6 +204,7 @@
       if (node.nodeType === Node.TEXT_NODE) {
         const text = node.textContent;
         if (!text.trim()) return;
+        if (isMathLikeText(text)) return;
         const frag = document.createDocumentFragment();
         const re = /(\S+|\s+)/g; let m;
         while ((m = re.exec(text)) !== null) {
@@ -497,7 +541,9 @@
     const blocks = [];
     root.querySelectorAll('h1,h2,h3,h4,h5,h6,p,li').forEach(el => {
       const t = el.textContent.trim();
-      if (t.length > 10) blocks.push({ tag: el.tagName.toLowerCase(), text: t });
+      if (t.length > 10 && !isMathLikeText(t) && !isMathElement(el)) {
+        blocks.push({ tag: el.tagName.toLowerCase(), text: t });
+      }
     });
     if (!blocks.length) return;
 
