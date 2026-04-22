@@ -1,0 +1,305 @@
+/* ── Vox Reader v3 ── */
+
+/* ── Word highlights ── */
+.vox-word {
+  cursor: default;
+  transition: none;
+  position: relative; /* ensures text stacks above sentence overlay */
+  z-index: 2147483641;
+}
+
+/* Active word: solid amber, text visible because span is above sentence overlay */
+.vox-word-active {
+  background: var(--vox-word-color, #f59e0b) !important;
+  color: #111 !important;
+  border-radius: 2px;
+  padding: 1px 3px;
+  margin: 0 -2px;
+  z-index: 2147483642;
+}
+
+/* Click cursor when reading */
+:root.vox-reading .vox-word { cursor: pointer; }
+:root.vox-reading .vox-word:hover { opacity: 0.8; }
+
+/* ── Player shell ── */
+#vox-player {
+  position: fixed;
+  z-index: 2147483647;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: -apple-system, 'SF Pro Text', 'Segoe UI', sans-serif;
+  user-select: none;
+  filter: drop-shadow(0 12px 40px rgba(0,0,0,0.7));
+  width: 380px;
+}
+#vox-player.vox-hidden { display: none !important; }
+
+/* ── Bar (compact mode) ── */
+#vox-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: #141414;
+  border: 1px solid #282828;
+  border-radius: 999px;
+  padding: 7px 16px 7px 12px;
+  height: 52px;
+  cursor: grab;
+}
+#vox-bar:active { cursor: grabbing; }
+#vox-bar button, #vox-bar input { cursor: pointer; }
+
+/* Bar buttons */
+.vox-bar-btn {
+  background: none; border: none; color: #777;
+  cursor: pointer; font-size: 12px; padding: 5px 7px;
+  border-radius: 8px; line-height: 1;
+  transition: color 0.12s, background 0.12s;
+  display: flex; align-items: center; justify-content: center;
+  white-space: nowrap; font-weight: 500;
+}
+.vox-bar-btn:hover { color: #fff; background: rgba(255,255,255,0.07); }
+.vox-bar-btn.active { color: #f59e0b; }
+
+/* Skip labels */
+.vox-skip-label {
+  font-size: 10px; line-height: 1;
+  display: flex; flex-direction: column; align-items: center; gap: 1px;
+}
+.vox-skip-icon { font-size: 13px; }
+
+/* Play button */
+#vox-playpause-bar {
+  background: #f59e0b; color: #111;
+  border-radius: 50%;
+  width: 38px; height: 38px; min-width: 38px;
+  font-size: 15px; border: none; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: background 0.12s, transform 0.1s;
+  flex-shrink: 0;
+}
+#vox-playpause-bar:hover { background: #fbbf24; transform: scale(1.05); }
+
+/* Divider */
+.vox-div { width: 1px; height: 18px; background: #252525; margin: 0 2px; flex-shrink: 0; }
+
+/* Progress */
+#vox-progress-wrap { flex: 1; display: flex; align-items: center; }
+#vox-progress {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; height: 3px; border-radius: 2px;
+  background: #2a2a2a; outline: none; cursor: pointer;
+}
+#vox-progress::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 13px; height: 13px; border-radius: 50%;
+  background: #f59e0b; cursor: pointer;
+  border: 2px solid #141414;
+  box-shadow: 0 0 0 0 rgba(245,158,11,0);
+  transition: box-shadow 0.15s;
+}
+#vox-progress:active::-webkit-slider-thumb {
+  box-shadow: 0 0 0 4px rgba(245,158,11,0.25);
+}
+
+/* Speed pill */
+#vox-speed-pill {
+  background: #1e1e1e; border: 1px solid #2e2e2e;
+  border-radius: 999px; padding: 4px 10px;
+  font-size: 11px; color: #888; cursor: pointer;
+  transition: all 0.12s; font-variant-numeric: tabular-nums;
+  white-space: nowrap; flex-shrink: 0;
+}
+#vox-speed-pill:hover { background: #2a2a2a; color: #ddd; }
+
+/* Settings icon */
+#vox-settings-btn { font-size: 14px; }
+#vox-close-bar { font-size: 14px; color: #555; }
+#vox-close-bar:hover { color: #ccc; background: rgba(255,255,255,0.06); }
+
+/* ── Settings panel (slides below bar) ── */
+#vox-settings {
+  display: none;
+  background: #111;
+  border: 1px solid #252525;
+  border-radius: 18px;
+  overflow: hidden;
+  margin-top: 8px;
+}
+#vox-settings.open { display: block; }
+
+/* Settings header */
+#vox-settings-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid #1c1c1c;
+}
+.vox-settings-title {
+  font-size: 11px; font-weight: 600;
+  letter-spacing: 0.1em; text-transform: uppercase; color: #555;
+}
+#vox-settings-close {
+  background: none; border: none; color: #555; cursor: pointer;
+  font-size: 14px; padding: 3px 6px; border-radius: 6px;
+  transition: color 0.12s, background 0.12s;
+}
+#vox-settings-close:hover { color: #ccc; background: rgba(255,255,255,0.06); }
+
+/* Settings body */
+#vox-settings-body { padding: 14px 16px 16px; }
+
+/* Section */
+.vs { margin-bottom: 16px; }
+.vs:last-child { margin-bottom: 0; }
+.vs-label {
+  font-size: 9px; font-weight: 700;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  color: #3a3a3a; margin-bottom: 8px;
+}
+
+/* Speed row */
+.vs-speed-row { display: flex; align-items: center; gap: 10px; }
+.vs-speed-row input[type=range] {
+  flex: 1; -webkit-appearance: none; appearance: none;
+  height: 3px; border-radius: 2px; background: #222; outline: none; cursor: pointer;
+}
+.vs-speed-row input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%;
+  background: #f59e0b; cursor: pointer; border: 2px solid #111;
+  box-shadow: 0 0 0 0 rgba(245,158,11,0); transition: box-shadow 0.15s;
+}
+.vs-speed-row input[type=range]:active::-webkit-slider-thumb {
+  box-shadow: 0 0 0 4px rgba(245,158,11,0.25);
+}
+.vs-speed-dim { font-size: 10px; color: #3a3a3a; }
+.vs-speed-val { font-size: 12px; color: #f59e0b; min-width: 36px; text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+
+/* Voice select */
+#vox-voice-select {
+  width: 100%; background: #181818; border: 1px solid #252525;
+  color: #bbb; border-radius: 10px; padding: 8px 12px;
+  font-size: 12px; outline: none; cursor: pointer;
+  -webkit-appearance: none; font-family: inherit;
+}
+#vox-voice-select:focus { border-color: #f59e0b; }
+
+/* Toggle row */
+.vs-toggle-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 0; border-bottom: 1px solid #181818;
+}
+.vs-toggle-row:last-of-type { border-bottom: none; }
+.vs-toggle-label { font-size: 12px; color: #888; }
+.vs-toggle {
+  position: relative; width: 38px; height: 22px;
+  background: #252525; border-radius: 999px;
+  cursor: pointer; transition: background 0.2s; border: none; flex-shrink: 0;
+}
+.vs-toggle.on { background: #f59e0b; }
+.vs-toggle::after {
+  content: ''; position: absolute;
+  width: 16px; height: 16px; border-radius: 50%;
+  background: #fff; top: 3px; left: 3px;
+  transition: transform 0.2s;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+}
+.vs-toggle.on::after { transform: translateX(16px); }
+
+/* Highlight style selector */
+.vs-hl-style {
+  display: flex; gap: 6px; margin-top: 8px;
+}
+.vs-hl-btn {
+  flex: 1; background: #181818; border: 1px solid #252525;
+  color: #777; border-radius: 8px; padding: 6px 8px;
+  font-size: 11px; font-family: inherit; cursor: pointer;
+  transition: all 0.15s; text-align: center;
+}
+.vs-hl-btn.active { background: #1e1e1e; border-color: #f59e0b; color: #f59e0b; }
+
+/* Color hex inputs */
+.vs-color-row { display: flex; gap: 10px; margin-top: 10px; }
+.vs-color-item {
+  flex: 1; display: flex; flex-direction: column; gap: 5px;
+}
+.vs-color-item-label { font-size: 10px; color: #444; }
+.vs-hex-input {
+  background: #181818; border: 1px solid #252525;
+  color: #bbb; border-radius: 8px; padding: 6px 10px;
+  font-size: 12px; font-family: monospace; outline: none; width: 100%;
+}
+.vs-hex-input:focus { border-color: #f59e0b; }
+.vs-hex-preview {
+  width: 100%; height: 4px; border-radius: 2px; margin-top: 3px;
+}
+
+/* Shortcut rows */
+.vs-sc-row {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 12px; color: #777; padding: 5px 0;
+}
+.vs-sc-input {
+  width: 34px; background: #181818; border: 1px solid #252525;
+  color: #f0f0f0; border-radius: 6px; padding: 4px;
+  text-align: center; font-size: 12px; font-family: monospace; outline: none;
+}
+.vs-sc-input:focus { border-color: #f59e0b; }
+.vs-save-btn {
+  margin-top: 8px; width: 100%; background: #181818;
+  border: 1px solid #252525; color: #777; border-radius: 9px;
+  padding: 7px; font-size: 11px; font-family: inherit; cursor: pointer;
+  transition: all 0.15s;
+}
+.vs-save-btn:hover { background: #222; color: #ccc; border-color: #333; }
+
+/* Export */
+.vs-export-row { display: flex; gap: 8px; }
+.vs-export-btn {
+  flex: 1; background: #181818; border: 1px solid #252525;
+  color: #777; border-radius: 9px; padding: 8px;
+  font-size: 11px; font-family: inherit; cursor: pointer;
+  transition: all 0.15s; text-align: center;
+}
+.vs-export-btn:hover { background: #222; color: #ccc; border-color: #333; }
+
+/* Status */
+#vox-status {
+  font-size: 10px; color: #383838; text-align: center;
+  padding-top: 10px; letter-spacing: 0.04em;
+}
+#vox-status.playing { color: #f59e0b; }
+
+/* ── Immersive ── */
+#vox-immersive {
+  position: fixed; inset: 0; z-index: 2147483646;
+  background: #0d0d0d; overflow-y: auto; padding: 48px 24px 140px;
+}
+#vox-immersive-inner { max-width: 680px; margin: 0 auto; }
+#vox-immersive-toolbar {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 32px;
+}
+#vox-immersive-exit {
+  background: #1e1e1e; border: 1px solid #2e2e2e;
+  color: #888; border-radius: 8px; padding: 7px 14px;
+  font-size: 12px; cursor: pointer; font-family: inherit; transition: all 0.15s;
+}
+#vox-immersive-exit:hover { background: #2a2a2a; color: #f0f0f0; }
+.vox-imm-nav {
+  background: #1e1e1e; border: 1px solid #2e2e2e;
+  color: #888; border-radius: 8px; padding: 7px 12px;
+  font-size: 12px; cursor: pointer; font-family: inherit; transition: all 0.15s;
+}
+.vox-imm-nav:hover { background: #2a2a2a; color: #f0f0f0; }
+#vox-immersive-content {
+  font-family: 'Georgia', 'Times New Roman', serif;
+  color: #d0c8bc; line-height: 1.9; font-size: 18px;
+}
+#vox-immersive-content h1,#vox-immersive-content h2,
+#vox-immersive-content h3,#vox-immersive-content h4 {
+  font-family: -apple-system, 'Segoe UI', sans-serif;
+  color: #f0f0f0; margin: 40px 0 16px; font-weight: 700;
+}
+#vox-immersive-content p { margin-bottom: 22px; }
+#vox-immersive-content li { margin-bottom: 10px; list-style: none; padding-left: 0; }
