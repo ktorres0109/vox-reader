@@ -3,6 +3,12 @@
 (function () {
   if (window.__voxReaderLoaded) return;
   window.__voxReaderLoaded = true;
+  function debugLog(payload) {
+    try { chrome.runtime.sendMessage({ action: 'debug_log', payload }); } catch (_) {}
+  }
+  // #region agent log
+  debugLog({sessionId:'31d6d1',runId:'pre-fix',hypothesisId:'H5',location:'content/content.js:init',message:'content script loaded',data:{href:location.href},timestamp:Date.now()});
+  // #endregion
 
   // Stop reading on any navigation — refresh, back/forward, or SPA route change
   window.addEventListener('beforeunload', () => window.speechSynthesis.cancel());
@@ -41,6 +47,7 @@
     wordColor: '#f59e0b',
     sentenceHex: '#f59e0b',
     scrubbing: false,
+    debugScrollLogCount: 0,
   };
 
   // ── Prefs ──────────────────────────────────────────────────────────────────
@@ -126,6 +133,18 @@
     const cls = (el.className||'').toString().toLowerCase().split(/\s+/);
     const exact = ['toc','sidebar','toolbar','breadcrumb','site-nav','page-nav'];
     return exact.includes(id) || cls.some(c => exact.includes(c));
+  }
+
+  function getLikelyScrollParent(el) {
+    let cur = el;
+    while (cur && cur !== document.body && cur !== document.documentElement) {
+      const st = window.getComputedStyle(cur);
+      const oy = st.overflowY || '';
+      const ox = st.overflowX || '';
+      if (/(auto|scroll|overlay)/.test(oy) || /(auto|scroll|overlay)/.test(ox)) return cur;
+      cur = cur.parentElement;
+    }
+    return document.scrollingElement || document.documentElement;
   }
 
   function getRoot() {
@@ -281,6 +300,11 @@
     // Use absolute positioning (rect + scroll offset) so overlays move with the page
     // and are never invalidated by scrollIntoView mid-animation
     const sx = window.scrollX, sy = window.scrollY;
+    const firstWord = words[0]?.el;
+    const sp = firstWord ? getLikelyScrollParent(firstWord) : null;
+    // #region agent log
+    debugLog({sessionId:'31d6d1',runId:'pre-fix',hypothesisId:'H1-H3',location:'content/content.js:placeSentenceOverlays:start',message:'overlay placement inputs',data:{si,wordCount:words.length,windowScrollX:sx,windowScrollY:sy,firstWordRect:firstWord?firstWord.getBoundingClientRect():null,scrollParentTag:sp?.tagName||null,scrollParentClass:(sp?.className||'').toString().slice(0,120),scrollParentScrollTop:sp?.scrollTop??null},timestamp:Date.now()});
+    // #endregion
     const lines = new Map();
     words.forEach(w => {
       const r = w.el.getBoundingClientRect();
@@ -309,6 +333,9 @@
       }
       document.documentElement.appendChild(el);
     });
+    // #region agent log
+    debugLog({sessionId:'31d6d1',runId:'pre-fix',hypothesisId:'H2-H3',location:'content/content.js:placeSentenceOverlays:end',message:'overlay placement outputs',data:{si,lineCount:lines.size,overlayCount:document.querySelectorAll('.vox-sent-overlay').length,overlayParent:'documentElement'},timestamp:Date.now()});
+    // #endregion
   }
 
   let _activeWordEl = null;
@@ -328,6 +355,9 @@
     // Sentence overlay: redraw and scroll when sentence changes
     const si = getSentenceIdx(idx);
     if (si !== S.currentSentence) {
+      // #region agent log
+      debugLog({sessionId:'31d6d1',runId:'pre-fix',hypothesisId:'H2-H4',location:'content/content.js:highlightAt:sentenceChange',message:'sentence changed before overlay redraw',data:{idx,prevSentence:S.currentSentence,nextSentence:si,currentWord:S.currentWord,speaking:S.speaking,paused:S.paused},timestamp:Date.now()});
+      // #endregion
       // Scroll the first word of the new sentence to center before drawing overlays
       // so getBoundingClientRect() is correct when we place them
       const firstWord = S.words[S.sentences[si]?.start];
@@ -921,7 +951,12 @@
 
   // ── Message + keyboard ─────────────────────────────────────────────────────
   chrome.runtime.onMessage.addListener((msg) => {
-    if (msg.action === 'toggle_player') loadPrefs(() => createPlayer());
+    if (msg.action === 'toggle_player') {
+      // #region agent log
+      debugLog({sessionId:'31d6d1',runId:'pre-fix',hypothesisId:'H5',location:'content/content.js:onMessage',message:'toggle player message received',data:{action:msg.action,href:location.href},timestamp:Date.now()});
+      // #endregion
+      loadPrefs(() => createPlayer());
+    }
   });
 
   document.addEventListener('keydown', (e) => {
@@ -939,5 +974,16 @@
       if (text) { if (!document.getElementById('vox-player')) createPlayer(); handleSel(text, sel.anchorNode); }
     }
   });
+
+  // Capture real scroll target (window vs nested container) during playback
+  document.addEventListener('scroll', (e) => {
+    if (!S.speaking) return;
+    if (S.debugScrollLogCount >= 8) return;
+    S.debugScrollLogCount += 1;
+    const t = e.target;
+    // #region agent log
+    debugLog({sessionId:'31d6d1',runId:'pre-fix',hypothesisId:'H1-H2',location:'content/content.js:scrollListener',message:'scroll event while speaking',data:{eventTargetTag:t?.tagName||'document',eventTargetClass:(t?.className||'').toString().slice(0,120),eventTargetScrollTop:typeof t?.scrollTop==='number'?t.scrollTop:null,windowScrollY:window.scrollY,overlayCount:document.querySelectorAll('.vox-sent-overlay').length,logCount:S.debugScrollLogCount},timestamp:Date.now()});
+    // #endregion
+  }, true);
 
 })();
