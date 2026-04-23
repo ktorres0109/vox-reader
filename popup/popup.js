@@ -1,3 +1,18 @@
+// #region agent log
+chrome.runtime.sendMessage({
+  action: 'debug_log',
+  payload: {
+    sessionId: '31d6d1',
+    runId: 'pre-fix',
+    hypothesisId: 'H8',
+    location: 'popup/popup.js:topLevel',
+    message: 'popup evaluated',
+    data: {},
+    timestamp: Date.now()
+  }
+}).catch(() => {});
+// #endregion
+
 chrome.storage.sync.get('shortcuts', (p) => {
   const sc = p.shortcuts || {};
   const play = (sc.play || 'p').toUpperCase();
@@ -9,6 +24,20 @@ chrome.storage.sync.get('shortcuts', (p) => {
 });
 
 document.getElementById('open-player').addEventListener('click', async () => {
+  // #region agent log
+  chrome.runtime.sendMessage({
+    action: 'debug_log',
+    payload: {
+      sessionId: '31d6d1',
+      runId: 'pre-fix',
+      hypothesisId: 'H8',
+      location: 'popup/popup.js:openPlayerClick',
+      message: 'open player clicked',
+      data: {},
+      timestamp: Date.now()
+    }
+  }).catch(() => {});
+  // #endregion
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) return;
   try {

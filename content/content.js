@@ -48,6 +48,7 @@
     sentenceHex: '#f59e0b',
     scrubbing: false,
     debugScrollLogCount: 0,
+    overlayRafPending: false,
   };
 
   // ── Prefs ──────────────────────────────────────────────────────────────────
@@ -87,6 +88,9 @@
     const h = S.sentenceHex;
     const r = parseInt(h.slice(1,3),16), g = parseInt(h.slice(3,5),16), b = parseInt(h.slice(5,7),16);
     S._sentenceRgba = `rgba(${r},${g},${b},0.25)`;
+    document.documentElement.style.setProperty('--vox-sentence-color', S.sentenceHex);
+    document.documentElement.classList.toggle('vox-sentence-style-bg', S.sentenceStyle === 'bg');
+    document.documentElement.classList.toggle('vox-sentence-style-underline', S.sentenceStyle === 'underline');
   }
 
   // ── Skip / readable root ───────────────────────────────────────────────────
@@ -95,13 +99,21 @@
   const SKIP_ROLES = new Set(['navigation','contentinfo','complementary','search']);
   const MATH_CLASS_HINTS = ['math','katex','mathjax','mjx','equation','formula','latex'];
   const CHAT_RESPONSE_SELECTORS = [
+    // Gemini: often no ChatGPT-style author role; specific blocks first
+    '.model-response',
+    '[data-testid="model-response"]',
+    '[data-test-id="model-response"]',
+    '.gemini-response',
     '[data-message-author-role="assistant"]',
+    '[data-testid*="model"]',
     '[data-testid*="assistant"]',
-    '[class*="assistant"]',
-    '[class*="response"]',
+    '[class*="model-response"]',
+    '[class*="message-content"]',
     '[class*="markdown"]',
     '[class*="prose"]',
-    'article'
+    // Broad fallbacks last — can match a huge wrapper; we narrow below.
+    '[class*="response"]',
+    'article',
   ];
 
   function isMathLikeText(text) {
@@ -124,8 +136,21 @@
     return MATH_CLASS_HINTS.some(h => attrs.includes(h));
   }
 
+  function isLikelyMapOrMapOverlay(el) {
+    if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
+    if (el.tagName === 'CANVAS' || el.tagName === 'SVG') return true;
+    const id = (el.id || '').toLowerCase();
+    const cls = (el.className || '').toString().toLowerCase();
+    const t = id + ' ' + cls;
+    if (/(^|[-_])(map|mapview|gmaps|staticmap|leaflet|mapbox)([-_]|$)/i.test(t)) return true;
+    if (t.includes('google-map') || t.includes('gmp-')) return true;
+    if (el.getAttribute('data-testid') && /map/i.test(el.getAttribute('data-testid') || '')) return true;
+    return false;
+  }
+
   function shouldSkip(el) {
     if (SKIP_TAGS.has(el.tagName)) return true;
+    if (isLikelyMapOrMapOverlay(el)) return true;
     if (isMathElement(el)) return true;
     const role = el.getAttribute('role');
     if (role && SKIP_ROLES.has(role)) return true;
@@ -147,9 +172,74 @@
     return document.scrollingElement || document.documentElement;
   }
 
+  function lastInDocumentOrder(els) {
+    if (!els.length) return null;
+    return els.reduce((a, b) => {
+      if (a === b) return a;
+      return a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? b : a;
+    });
+  }
+
+  /** Drop ancestors when a descendant is also a candidate (keep the inner / specific node). */
+  function innermostOnlyCandidates(nodes) {
+    return nodes.filter((n) => !nodes.some((m) => m !== n && n.contains(m)));
+  }
+
+  /**
+   * When a turn has both a map (canvas) and prose as siblings, the outer
+   * container matches both; excluding any node with a canvas made us drop
+   * the real answer and fall back to <main> — wrapping the whole page.
+   * Pick a descendant subtree with no canvas (the text column only).
+   */
+  function narrowChatRootExcludingMap(host) {
+    if (!host || !host.querySelector('canvas')) return host;
+    const prefer = host.querySelector(
+      '[class*="markdown"], [class*="prose"], [class*="message-text"], [data-testid*="message-text"]'
+    );
+    if (prefer && !prefer.querySelector('canvas') && (prefer.innerText || '').trim().length > 50) {
+      // #region agent log
+      debugLog({
+        sessionId: '31d6d1',
+        runId: 'pre-fix',
+        hypothesisId: 'H22',
+        location: 'content/content.js:narrowChatRootExcludingMap',
+        message: 'chose prefer markdown/prose inside map turn',
+        data: { textLen: (prefer.innerText || '').trim().length },
+        timestamp: Date.now(),
+      });
+      // #endregion
+      return prefer;
+    }
+    const cands = [];
+    host.querySelectorAll('*').forEach((el) => {
+      if (el.tagName === 'CANVAS' || el.querySelector('canvas')) return;
+      if (isLikelyMapOrMapOverlay(el)) return;
+      const txt = (el.innerText || '').trim();
+      if (txt.length < 100) return;
+      cands.push(el);
+    });
+    // Prefer the largest no-canvas branch (prose), not a tiny map label.
+    cands.sort((a, b) => (b.innerText || '').length - (a.innerText || '').length);
+    // #region agent log
+    debugLog({
+      sessionId: '31d6d1',
+      runId: 'pre-fix',
+      hypothesisId: 'H22',
+      location: 'content/content.js:narrowChatRootExcludingMap',
+      message: 'chose largest no-canvas subtree',
+      data: { pickedTextLen: cands[0] ? (cands[0].innerText || '').trim().length : 0 },
+      timestamp: Date.now(),
+    });
+    // #endregion
+    return cands[0] || host;
+  }
+
   function getRoot() {
-    // 0. AI chat pages: prefer latest assistant response block
-    const chatCandidates = Array.from(document.querySelectorAll(CHAT_RESPONSE_SELECTORS.join(',')))
+    // 0. AI chat pages: prefer tightest (smallest) latest assistant block — not a
+    // huge wrapper that also embeds maps/cards, which would wrap map label text.
+    const chatCandidates = Array.from(
+      document.querySelectorAll(CHAT_RESPONSE_SELECTORS.join(','))
+    )
       .filter(el => {
         if (shouldSkip(el)) return false;
         const txt = (el.innerText || '').trim();
@@ -158,7 +248,31 @@
         const rect = el.getBoundingClientRect();
         return rect.width > 150 && rect.height > 40;
       });
-    if (chatCandidates.length) return chatCandidates[chatCandidates.length - 1];
+    if (chatCandidates.length) {
+      // Prefer the innermost match (e.g. model body, not a shell), then the latest
+      // in *document* order (stable when scrolled / when bottom pixels tie-break wrong).
+      const specific = innermostOnlyCandidates(chatCandidates);
+      const host = lastInDocumentOrder(specific.length ? specific : chatCandidates);
+      const picked = narrowChatRootExcludingMap(host);
+      // #region agent log
+      debugLog({
+        sessionId: '31d6d1',
+        runId: 'pre-fix',
+        hypothesisId: 'H23',
+        location: 'content/content.js:getRoot:chat',
+        message: 'chat root pick',
+        data: {
+          candidateCount: chatCandidates.length,
+          innermostCount: specific.length,
+          pickedTextLen: (picked.innerText || '').trim().length,
+          hadCanvasInHost: !!host.querySelector('canvas'),
+          hasCanvasPicked: !!picked.querySelector('canvas'),
+        },
+        timestamp: Date.now(),
+      });
+      // #endregion
+      return picked;
+    }
 
     // 1. Semantic tags
     const semantic = document.querySelector('article, main, [role="main"]');
@@ -290,59 +404,40 @@
 
   // ── Highlighting ──────────────────────────────────────────────────────────
   // Uses CSS class on the word span (not overlays) so text is always visible.
-  // Sentence gets a line-per-line overlay rect for seamless background.
+  // Sentence highlight is applied directly to sentence word spans.
 
   function placeSentenceOverlays(si) {
-    document.querySelectorAll('.vox-sent-overlay').forEach(e => e.remove());
+    document.querySelectorAll('.vox-sentence-active').forEach(e => e.classList.remove('vox-sentence-active'));
     if (!S.highlightSentence || si < 0) return;
     const words = getSentenceWords(si);
     if (!words.length) return;
-    // Use absolute positioning (rect + scroll offset) so overlays move with the page
-    // and are never invalidated by scrollIntoView mid-animation
-    const sx = window.scrollX, sy = window.scrollY;
     const firstWord = words[0]?.el;
     const sp = firstWord ? getLikelyScrollParent(firstWord) : null;
     // #region agent log
-    debugLog({sessionId:'31d6d1',runId:'pre-fix',hypothesisId:'H1-H3',location:'content/content.js:placeSentenceOverlays:start',message:'overlay placement inputs',data:{si,wordCount:words.length,windowScrollX:sx,windowScrollY:sy,firstWordRect:firstWord?firstWord.getBoundingClientRect():null,scrollParentTag:sp?.tagName||null,scrollParentClass:(sp?.className||'').toString().slice(0,120),scrollParentScrollTop:sp?.scrollTop??null},timestamp:Date.now()});
+    debugLog({sessionId:'31d6d1',runId:'pre-fix',hypothesisId:'H18',location:'content/content.js:placeSentenceOverlays:start',message:'inline sentence highlight inputs',data:{si,wordCount:words.length,firstWordRect:firstWord?firstWord.getBoundingClientRect():null,scrollParentTag:sp?.tagName||null,scrollParentClass:(sp?.className||'').toString().slice(0,120),scrollParentScrollTop:sp?.scrollTop??null},timestamp:Date.now()});
     // #endregion
-    const lines = new Map();
-    words.forEach(w => {
-      const r = w.el.getBoundingClientRect();
-      const absTop = Math.round(r.top + sy);
-      if (!lines.has(absTop)) lines.set(absTop, { top: r.top + sy, left: r.left + sx, right: r.right + sx, bottom: r.bottom + sy });
-      else {
-        const l = lines.get(absTop);
-        l.left  = Math.min(l.left,  r.left  + sx);
-        l.right = Math.max(l.right, r.right + sx);
-        l.bottom = Math.max(l.bottom, r.bottom + sy);
-      }
-    });
-    lines.forEach(({ top, left, right, bottom }) => {
-      const el = document.createElement('div');
-      el.className = 'vox-sent-overlay';
-      const color = S._sentenceRgba || 'rgba(245,158,11,0.25)';
-      const hex   = S.sentenceHex   || '#f59e0b';
-      if (S.sentenceStyle === 'underline') {
-        el.style.cssText = `position:absolute;pointer-events:none;z-index:2147483640;
-          background:transparent;border-bottom:2.5px solid ${hex};
-          left:${left-2}px;top:${top}px;width:${right-left+4}px;height:${bottom-top}px;`;
-      } else {
-        el.style.cssText = `position:absolute;pointer-events:none;z-index:2147483640;
-          background:${color};border-radius:3px;
-          left:${left-2}px;top:${top}px;width:${right-left+4}px;height:${bottom-top}px;`;
-      }
-      document.documentElement.appendChild(el);
-    });
+    words.forEach(w => w.el.classList.add('vox-sentence-active'));
     // #region agent log
-    debugLog({sessionId:'31d6d1',runId:'pre-fix',hypothesisId:'H2-H3',location:'content/content.js:placeSentenceOverlays:end',message:'overlay placement outputs',data:{si,lineCount:lines.size,overlayCount:document.querySelectorAll('.vox-sent-overlay').length,overlayParent:'documentElement'},timestamp:Date.now()});
+    debugLog({sessionId:'31d6d1',runId:'pre-fix',hypothesisId:'H18',location:'content/content.js:placeSentenceOverlays:end',message:'inline sentence highlight outputs',data:{si,highlightedWordCount:document.querySelectorAll('.vox-sentence-active').length,sentenceStyle:S.sentenceStyle},timestamp:Date.now()});
     // #endregion
+  }
+
+  function scheduleOverlayRefresh() {
+    if (S.overlayRafPending) return;
+    S.overlayRafPending = true;
+    requestAnimationFrame(() => {
+      S.overlayRafPending = false;
+      if (!S.highlightSentence || S.currentSentence < 0) return;
+      if (!S.speaking && !S.paused) return;
+      placeSentenceOverlays(S.currentSentence);
+    });
   }
 
   let _activeWordEl = null;
 
   function clearHL() {
     if (_activeWordEl) { _activeWordEl.classList.remove('vox-word-active'); _activeWordEl = null; }
-    document.querySelectorAll('.vox-sent-overlay').forEach(e => e.remove());
+    document.querySelectorAll('.vox-sentence-active').forEach(e => e.classList.remove('vox-sentence-active'));
   }
 
   function highlightAt(idx) {
@@ -363,10 +458,9 @@
       const firstWord = S.words[S.sentences[si]?.start];
       if (firstWord) {
         firstWord.el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        // Small delay so layout settles before placing absolute overlays
-        setTimeout(() => {
-          placeSentenceOverlays(si);
-        }, 120);
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => placeSentenceOverlays(si));
+        });
       } else {
         placeSentenceOverlays(si);
       }
@@ -982,8 +1076,10 @@
     S.debugScrollLogCount += 1;
     const t = e.target;
     // #region agent log
-    debugLog({sessionId:'31d6d1',runId:'pre-fix',hypothesisId:'H1-H2',location:'content/content.js:scrollListener',message:'scroll event while speaking',data:{eventTargetTag:t?.tagName||'document',eventTargetClass:(t?.className||'').toString().slice(0,120),eventTargetScrollTop:typeof t?.scrollTop==='number'?t.scrollTop:null,windowScrollY:window.scrollY,overlayCount:document.querySelectorAll('.vox-sent-overlay').length,logCount:S.debugScrollLogCount},timestamp:Date.now()});
+    debugLog({sessionId:'31d6d1',runId:'pre-fix',hypothesisId:'H18',location:'content/content.js:scrollListener',message:'scroll event while speaking',data:{eventTargetTag:t?.tagName||'document',eventTargetClass:(t?.className||'').toString().slice(0,120),eventTargetScrollTop:typeof t?.scrollTop==='number'?t.scrollTop:null,windowScrollY:window.scrollY,sentenceActiveCount:document.querySelectorAll('.vox-sentence-active').length,logCount:S.debugScrollLogCount},timestamp:Date.now()});
     // #endregion
+    scheduleOverlayRefresh();
   }, true);
+  window.addEventListener('resize', () => scheduleOverlayRefresh(), true);
 
 })();

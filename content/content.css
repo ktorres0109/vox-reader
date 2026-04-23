@@ -8,14 +8,28 @@
   z-index: 2147483641;
 }
 
-/* Active word: solid amber, text visible because span is above sentence overlay */
+.vox-sentence-active {
+  border-radius: 2px;
+}
+
+:root.vox-sentence-style-bg .vox-sentence-active {
+  background: rgba(245, 158, 11, 0.25);
+}
+
+:root.vox-sentence-style-underline .vox-sentence-active {
+  background: transparent;
+  border-bottom: 2px solid var(--vox-sentence-color, #f59e0b);
+}
+
+/* Active word: no padding/margin so line layout does not shift vs sentence fill */
 .vox-word-active {
   background: var(--vox-word-color, #f59e0b) !important;
   color: #111 !important;
   border-radius: 2px;
-  padding: 1px 3px;
-  margin: 0 -2px;
+  padding: 0;
+  margin: 0;
   z-index: 2147483642;
+  box-shadow: 0 0 0 1px var(--vox-word-color, #f59e0b);
 }
 
 /* Click cursor when reading */
