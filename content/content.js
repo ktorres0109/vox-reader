@@ -3,12 +3,6 @@
 (function () {
   if (window.__voxReaderLoaded) return;
   window.__voxReaderLoaded = true;
-  function debugLog(payload) {
-    try { chrome.runtime.sendMessage({ action: 'debug_log', payload }); } catch (_) {}
-  }
-  // #region agent log
-  debugLog({sessionId:'31d6d1',runId:'pre-fix',hypothesisId:'H5',location:'content/content.js:init',message:'content script loaded',data:{href:location.href},timestamp:Date.now()});
-  // #endregion
 
   // Stop reading on any navigation — refresh, back/forward, or SPA route change
   window.addEventListener('beforeunload', () => window.speechSynthesis.cancel());
@@ -47,7 +41,6 @@
     wordColor: '#f59e0b',
     sentenceHex: '#f59e0b',
     scrubbing: false,
-    debugScrollLogCount: 0,
     overlayRafPending: false,
   };
 
@@ -197,17 +190,6 @@
       '[class*="markdown"], [class*="prose"], [class*="message-text"], [data-testid*="message-text"]'
     );
     if (prefer && !prefer.querySelector('canvas') && (prefer.innerText || '').trim().length > 50) {
-      // #region agent log
-      debugLog({
-        sessionId: '31d6d1',
-        runId: 'pre-fix',
-        hypothesisId: 'H22',
-        location: 'content/content.js:narrowChatRootExcludingMap',
-        message: 'chose prefer markdown/prose inside map turn',
-        data: { textLen: (prefer.innerText || '').trim().length },
-        timestamp: Date.now(),
-      });
-      // #endregion
       return prefer;
     }
     const cands = [];
@@ -220,17 +202,6 @@
     });
     // Prefer the largest no-canvas branch (prose), not a tiny map label.
     cands.sort((a, b) => (b.innerText || '').length - (a.innerText || '').length);
-    // #region agent log
-    debugLog({
-      sessionId: '31d6d1',
-      runId: 'pre-fix',
-      hypothesisId: 'H22',
-      location: 'content/content.js:narrowChatRootExcludingMap',
-      message: 'chose largest no-canvas subtree',
-      data: { pickedTextLen: cands[0] ? (cands[0].innerText || '').trim().length : 0 },
-      timestamp: Date.now(),
-    });
-    // #endregion
     return cands[0] || host;
   }
 
@@ -254,31 +225,21 @@
       const specific = innermostOnlyCandidates(chatCandidates);
       const host = lastInDocumentOrder(specific.length ? specific : chatCandidates);
       const picked = narrowChatRootExcludingMap(host);
-      // #region agent log
-      debugLog({
-        sessionId: '31d6d1',
-        runId: 'pre-fix',
-        hypothesisId: 'H23',
-        location: 'content/content.js:getRoot:chat',
-        message: 'chat root pick',
-        data: {
-          candidateCount: chatCandidates.length,
-          innermostCount: specific.length,
-          pickedTextLen: (picked.innerText || '').trim().length,
-          hadCanvasInHost: !!host.querySelector('canvas'),
-          hasCanvasPicked: !!picked.querySelector('canvas'),
-        },
-        timestamp: Date.now(),
-      });
-      // #endregion
       return picked;
     }
 
-    // 1. Semantic tags
+    // 1. Markdown body containers (GitHub, GitLab, HackMD, etc.)
+    const mdBody = document.querySelector(
+      '.markdown-body, [class*="markdown-body"], .markdown-content, .md-content, ' +
+      '.post-content, .entry-content, .article-content'
+    );
+    if (mdBody && (mdBody.innerText||'').trim().length > 100) return mdBody;
+
+    // 2. Semantic tags
     const semantic = document.querySelector('article, main, [role="main"]');
     if (semantic) return semantic;
 
-    // 2. Prose containers (Perplexity, Notion, Medium etc. use [class*="prose"])
+    // 3. Prose containers (Perplexity, Notion, Medium etc. use [class*="prose"])
     const proseEls = Array.from(document.querySelectorAll('[class*="prose"]'))
       .filter(el => (el.innerText||'').trim().length > 200);
     if (proseEls.length) {
@@ -287,7 +248,7 @@
       return proseEls[0];
     }
 
-    // 3. Score divs by DENSITY: content tags per total child elements
+    // 4. Score divs by DENSITY: content tags per total child elements
     // This avoids picking outer wrappers (which have low density) over real content divs
     const candidates = Array.from(document.querySelectorAll('div, section'))
       .filter(el => (el.innerText||'').trim().length > 300 && !shouldSkip(el));
@@ -391,8 +352,26 @@
 
   function rewrap(cb) {
     unwrap();
-    waitForContent((root) => {
-      wrapWords(root);
+
+    // Try synchronous wrap first — works immediately on static/fully-loaded pages
+    const root = getRoot();
+    wrapWords(root);
+
+    if (S.words.length > 0) {
+      if (cb) cb();
+      return;
+    }
+
+    // No words found from root — try body as fallback
+    if (root !== document.body) {
+      wrapWords(document.body);
+      if (S.words.length > 0) { if (cb) cb(); return; }
+    }
+
+    // Still nothing — page is still loading (SPA/streaming), poll until stable
+    waitForContent((r) => {
+      if (!S.words.length) wrapWords(r);
+      if (!S.words.length && r !== document.body) wrapWords(document.body);
       if (cb) cb();
     });
   }
@@ -411,15 +390,7 @@
     if (!S.highlightSentence || si < 0) return;
     const words = getSentenceWords(si);
     if (!words.length) return;
-    const firstWord = words[0]?.el;
-    const sp = firstWord ? getLikelyScrollParent(firstWord) : null;
-    // #region agent log
-    debugLog({sessionId:'31d6d1',runId:'pre-fix',hypothesisId:'H18',location:'content/content.js:placeSentenceOverlays:start',message:'inline sentence highlight inputs',data:{si,wordCount:words.length,firstWordRect:firstWord?firstWord.getBoundingClientRect():null,scrollParentTag:sp?.tagName||null,scrollParentClass:(sp?.className||'').toString().slice(0,120),scrollParentScrollTop:sp?.scrollTop??null},timestamp:Date.now()});
-    // #endregion
     words.forEach(w => w.el.classList.add('vox-sentence-active'));
-    // #region agent log
-    debugLog({sessionId:'31d6d1',runId:'pre-fix',hypothesisId:'H18',location:'content/content.js:placeSentenceOverlays:end',message:'inline sentence highlight outputs',data:{si,highlightedWordCount:document.querySelectorAll('.vox-sentence-active').length,sentenceStyle:S.sentenceStyle},timestamp:Date.now()});
-    // #endregion
   }
 
   function scheduleOverlayRefresh() {
@@ -450,9 +421,6 @@
     // Sentence overlay: redraw and scroll when sentence changes
     const si = getSentenceIdx(idx);
     if (si !== S.currentSentence) {
-      // #region agent log
-      debugLog({sessionId:'31d6d1',runId:'pre-fix',hypothesisId:'H2-H4',location:'content/content.js:highlightAt:sentenceChange',message:'sentence changed before overlay redraw',data:{idx,prevSentence:S.currentSentence,nextSentence:si,currentWord:S.currentWord,speaking:S.speaking,paused:S.paused},timestamp:Date.now()});
-      // #endregion
       // Scroll the first word of the new sentence to center before drawing overlays
       // so getBoundingClientRect() is correct when we place them
       const firstWord = S.words[S.sentences[si]?.start];
@@ -630,29 +598,42 @@
     else { S.currentWord = t; highlightAt(t); }
   }
 
-  // Short selection → jump to that word; long → read chunk
-  function handleSel(text, anchor) {
-    const wc = text.trim().split(/\s+/).length;
-    if (wc <= 4 && anchor) {
-      let el = anchor.nodeType === Node.TEXT_NODE ? anchor.parentElement : anchor;
-      while (el && !el.classList?.contains('vox-word')) el = el.parentElement;
-      if (el && el.dataset.voxIndex != null) {
-        const doSpeak = () => speakFrom(parseInt(el.dataset.voxIndex));
-        if (!S.words.length) { rewrap(doSpeak); return; }
-        doSpeak(); return;
-      }
+  // Find the first word visible in the viewport (for play-from-scroll-position)
+  function findFirstVisibleWordIdx() {
+    if (!S.words.length) return 0;
+    for (let i = 0; i < S.words.length; i++) {
+      const rect = S.words[i].el.getBoundingClientRect();
+      if (rect.top >= 0 && rect.bottom > 0) return i;
     }
-    readChunk(text);
+    return 0;
   }
 
-  function readChunk(text) {
-    window.speechSynthesis.cancel(); clearHL();
-    const u = new SpeechSynthesisUtterance(text);
-    u.rate = S.speed; u.lang = 'en-US'; if (S.voice) u.voice = S.voice;
-    u.onend = () => { S.speaking = false; S.paused = false; updatePlayBtn(); setStatus('Done'); };
-    u.onerror = (e) => { if (e.error === 'interrupted') return; S.speaking = false; S.paused = false; updatePlayBtn(); setStatus('Error'); };
-    S.speaking = true; S.paused = false;
-    window.speechSynthesis.speak(u); updatePlayBtn(); setStatus('Playing selection', true);
+  // Selection → start reading from that word onward with full highlighting
+  function handleSel(selText, anchor) {
+    function findAnchorIdx() {
+      if (!anchor || !S.words.length) return -1;
+      let el = anchor.nodeType === Node.TEXT_NODE ? anchor.parentElement : anchor;
+      while (el && !el.classList?.contains('vox-word')) el = el.parentElement;
+      return (el && el.dataset.voxIndex != null) ? parseInt(el.dataset.voxIndex) : -1;
+    }
+
+    function findByText(text) {
+      const first = text.trim().split(/\s+/)[0].replace(/\W/g, '').toLowerCase();
+      if (!first) return -1;
+      return S.words.findIndex(w => w.text.replace(/\W/g, '').toLowerCase() === first);
+    }
+
+    if (S.words.length) {
+      let idx = findAnchorIdx();
+      if (idx < 0) idx = findByText(selText);
+      if (idx >= 0) { speakFrom(idx); return; }
+    }
+
+    // Words not wrapped yet — rewrap then find by text (old anchor is detached)
+    rewrap(() => {
+      const idx = findByText(selText);
+      speakFrom(idx >= 0 ? idx : 0);
+    });
   }
 
   // ── Immersive ──────────────────────────────────────────────────────────────
@@ -864,12 +845,27 @@
     // Close bar
     document.getElementById('vox-close-bar').onclick = () => { stop(false); S.playerEl.classList.add('vox-hidden'); };
 
+    // Capture selection on mousedown — clicking a button clears it before onclick fires
+    let _capturedSel = null;
+    document.getElementById('vox-playpause-bar').addEventListener('mousedown', () => {
+      const sel = window.getSelection();
+      const text = sel ? sel.toString().trim() : '';
+      _capturedSel = text ? { text, anchor: sel.anchorNode } : null;
+    });
+
     // Play/pause
     document.getElementById('vox-playpause-bar').onclick = () => {
-      if (!S.speaking) {
-        const sel = window.getSelection(); const text = sel.toString().trim();
-        if (text) { handleSel(text, sel.anchorNode); }
-        else { if (!S.words.length) { rewrap(() => speakFrom(S.currentWord)); } else { speakFrom(S.currentWord); } }
+      if (!S.speaking && !S.paused) {
+        const captured = _capturedSel; _capturedSel = null;
+        if (captured) {
+          handleSel(captured.text, captured.anchor);
+        } else if (!S.words.length) {
+          rewrap(() => speakFrom(findFirstVisibleWordIdx()));
+        } else {
+          // Resume from first visible word if at start, otherwise current position
+          const startIdx = S.currentWord === 0 ? findFirstVisibleWordIdx() : S.currentWord;
+          speakFrom(startIdx);
+        }
       } else { pauseResume(); }
     };
 
@@ -1046,9 +1042,6 @@
   // ── Message + keyboard ─────────────────────────────────────────────────────
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg.action === 'toggle_player') {
-      // #region agent log
-      debugLog({sessionId:'31d6d1',runId:'pre-fix',hypothesisId:'H5',location:'content/content.js:onMessage',message:'toggle player message received',data:{action:msg.action,href:location.href},timestamp:Date.now()});
-      // #endregion
       loadPrefs(() => createPlayer());
     }
   });
@@ -1069,15 +1062,8 @@
     }
   });
 
-  // Capture real scroll target (window vs nested container) during playback
-  document.addEventListener('scroll', (e) => {
+  document.addEventListener('scroll', () => {
     if (!S.speaking) return;
-    if (S.debugScrollLogCount >= 8) return;
-    S.debugScrollLogCount += 1;
-    const t = e.target;
-    // #region agent log
-    debugLog({sessionId:'31d6d1',runId:'pre-fix',hypothesisId:'H18',location:'content/content.js:scrollListener',message:'scroll event while speaking',data:{eventTargetTag:t?.tagName||'document',eventTargetClass:(t?.className||'').toString().slice(0,120),eventTargetScrollTop:typeof t?.scrollTop==='number'?t.scrollTop:null,windowScrollY:window.scrollY,sentenceActiveCount:document.querySelectorAll('.vox-sentence-active').length,logCount:S.debugScrollLogCount},timestamp:Date.now()});
-    // #endregion
     scheduleOverlayRefresh();
   }, true);
   window.addEventListener('resize', () => scheduleOverlayRefresh(), true);
