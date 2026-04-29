@@ -285,6 +285,68 @@
 }
 #vox-status.playing { color: #f59e0b; }
 
+/* ── Focus indicators (WCAG 2.1 AA) ── */
+#vox-player button:focus-visible,
+#vox-player input:focus-visible,
+#vox-player select:focus-visible {
+  outline: 2px solid #f59e0b;
+  outline-offset: 2px;
+}
+
+/* ── Utility ── */
+.vs-hidden { display: none !important; }
+
+/* ── Voice Engine toggle ── */
+.vs-engine-row {
+  display: flex; gap: 6px;
+}
+.vs-engine-btn {
+  flex: 1; background: #181818; border: 1px solid #252525;
+  color: #777; border-radius: 8px; padding: 7px 8px;
+  font-size: 11px; font-family: inherit; cursor: pointer;
+  transition: all 0.15s; text-align: center;
+}
+.vs-engine-btn.active { background: #1e1e1e; border-color: #f59e0b; color: #f59e0b; }
+.vs-engine-btn:hover:not(.active) { background: #222; color: #ccc; }
+
+/* ── Kokoro section ── */
+.vs-kokoro-info {
+  font-size: 10px; color: #444; margin-bottom: 8px; line-height: 1.5;
+}
+.vs-kokoro-dl {
+  width: 100%; background: #1e1e1e; border: 1px solid #f59e0b22;
+  color: #f59e0b; border-radius: 9px; padding: 8px;
+  font-size: 11px; font-family: inherit; cursor: pointer;
+  transition: all 0.15s; text-align: center;
+}
+.vs-kokoro-dl:hover { background: #2a2a2a; border-color: #f59e0b66; }
+
+/* Download progress bar */
+#vox-dl-bar-wrap {
+  display: flex; align-items: center; gap: 8px; margin-top: 8px;
+}
+#vox-dl-bar-track {
+  flex: 1; height: 4px; background: #252525; border-radius: 2px; overflow: hidden;
+}
+#vox-dl-bar-fill {
+  height: 100%; background: #f59e0b; border-radius: 2px;
+  width: 0%; transition: width 0.3s;
+}
+#vox-dl-pct {
+  font-size: 10px; color: #f59e0b; min-width: 28px; text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Kokoro AI voice select */
+#vox-kokoro-voice-wrap { margin-top: 6px; }
+#vox-kokoro-voice-select {
+  width: 100%; background: #181818; border: 1px solid #252525;
+  color: #bbb; border-radius: 10px; padding: 8px 12px;
+  font-size: 12px; outline: none; cursor: pointer;
+  -webkit-appearance: none; font-family: inherit; margin-top: 4px;
+}
+#vox-kokoro-voice-select:focus { border-color: #f59e0b; }
+
 /* ── Immersive ── */
 #vox-immersive {
   position: fixed; inset: 0; z-index: 2147483646;

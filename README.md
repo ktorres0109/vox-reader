@@ -2,7 +2,7 @@
 
 A free, private Chrome extension that reads any webpage aloud with word-by-word and sentence highlighting.
 
-No account. No API key. No data sent anywhere. Runs entirely in your browser using the Web Speech API.
+No account. No API key. Your text never leaves your browser.
 
 ---
 
@@ -10,6 +10,8 @@ No account. No API key. No data sent anywhere. Runs entirely in your browser usi
 
 - Word-by-word highlighting synced to speech
 - Sentence-level highlighting with background or underline style
+- **AI Neural Voice** — Kokoro 82M model, downloads once (~80MB), works offline after
+- Classic system voices — instant, no download
 - Draggable floating player bar
 - Adjustable speed (0.5× – 3.0×) via slider or click-to-cycle pill
 - Voice selector (filters for English voices, prefers high-quality ones)
@@ -20,16 +22,20 @@ No account. No API key. No data sent anywhere. Runs entirely in your browser usi
 - Customizable keyboard shortcuts
 - Saves all preferences via Chrome sync storage
 - Works on any page including SPAs (React, Next.js, Notion, Perplexity)
+- WCAG 2.1 AA accessible (ARIA labels, focus indicators, live regions)
 
 ---
 
 ## Install (Developer Mode)
 
 1. Clone or download this repo
-2. Open Chrome → `chrome://extensions`
-3. Enable **Developer mode** (top-right toggle)
-4. Click **Load unpacked** → select the repo folder
-5. Pin the Vox Reader icon in your toolbar
+2. Run `zsh tools/fetch-deps.sh` once to download the AI voice library
+3. Open Chrome → `chrome://extensions`
+4. Enable **Developer mode** (top-right toggle)
+5. Click **Load unpacked** → select the repo folder
+6. Pin the Vox Reader icon in your toolbar
+
+> **Requires Chrome 116+** (for AI Neural Voice offscreen synthesis)
 
 ---
 
@@ -62,19 +68,27 @@ Defaults — all customizable in Settings:
 
 ## Voice Quality
 
-Voice quality depends on your OS and installed voices:
+**AI Neural Voice (Kokoro)** — Enable in Settings → Voice Engine → AI Neural. Downloads the Kokoro 82M model (~80MB) on first use from HuggingFace's public CDN, then works fully offline. Available voices: Bella, Sarah, Sky, Nicole (Female), Adam, Michael (Male).
 
-- **macOS** — Samantha, Ava, Serena, Victoria (excellent quality)
+**Classic System Voices** — Instant playback, no download. Quality depends on OS:
+
+- **macOS** — Samantha, Ava, Serena, Victoria (excellent)
 - **Windows** — Zira, Aria (good)
 - **Linux** — eSpeak (basic)
 
-On macOS, go to **System Settings → Accessibility → Spoken Content** to download additional high-quality voices.
+On macOS: **System Settings → Accessibility → Spoken Content** to install premium voices.
 
 ---
 
-## Privacy
+## Privacy Policy
 
-Everything runs locally. No network requests are made by this extension. Your text never leaves your browser.
+**This extension does not collect, transmit, or store any personal data.**
+
+- All speech synthesis happens locally in your browser
+- Settings sync via your own Chrome sync account (`chrome.storage.sync`) — controlled by Google's standard sync infrastructure
+- **AI Neural Voice only:** The Kokoro model weights (~80MB) are fetched from HuggingFace's public CDN (`huggingface.co`) on first enable. No user text is sent — only the model files are downloaded. Your text is never uploaded anywhere.
+- No analytics, no tracking, no external servers operated by this extension
+- No account required
 
 ---
 

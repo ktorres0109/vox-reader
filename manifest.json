@@ -1,17 +1,21 @@
 {
   "manifest_version": 3,
   "name": "Vox Reader",
-  "version": "1.3.0",
-  "minimum_chrome_version": "88",
-  "description": "Read any webpage aloud with word-by-word highlighting. Free, private, no account needed.",
+  "version": "2.0.0",
+  "minimum_chrome_version": "116",
+  "description": "Read any webpage aloud with word-by-word highlighting. Free, private, no account needed. Includes optional AI neural voice.",
   "permissions": [
     "storage",
     "activeTab",
-    "scripting"
+    "scripting",
+    "offscreen"
   ],
   "host_permissions": [
     "<all_urls>"
   ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  },
   "background": {
     "service_worker": "background/service_worker.js"
   },

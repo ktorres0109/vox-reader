@@ -1,28 +1,34 @@
-// Vox Reader v3
+// Vox Reader v3 — content script
 
 (function () {
   if (window.__voxReaderLoaded) return;
   window.__voxReaderLoaded = true;
 
-  // Stop reading on any navigation — refresh, back/forward, or SPA route change
-  window.addEventListener('beforeunload', () => window.speechSynthesis.cancel());
-  window.addEventListener('pagehide',     () => window.speechSynthesis.cancel());
+  // Stop TTS on any navigation — refresh, back/forward, or SPA route change
+  function stopTTS() {
+    if (S.voiceEngine === 'kokoro') {
+      chrome.runtime.sendMessage({ action: 'kokoro_stop' }).catch(() => {});
+    } else {
+      window.speechSynthesis.cancel();
+    }
+  }
+
+  window.addEventListener('beforeunload', () => stopTTS());
+  window.addEventListener('pagehide',     () => stopTTS());
 
   // SPA navigation — wrap pushState/replaceState to stop reading on route change
-  // Wrapped in try/catch: some SPAs (Next.js, Perplexity) freeze history methods
   try {
     ['pushState', 'replaceState'].forEach(method => {
       const orig = history[method];
       history[method] = function (...args) {
-        window.speechSynthesis.cancel();
-        stopTicker();
+        stopTTS(); stopTicker();
         if (S.immersiveActive) exitImmersive();
         return orig.apply(this, args);
       };
     });
   } catch (e) { /* history not writable on this page — skip */ }
   window.addEventListener('popstate', () => {
-    window.speechSynthesis.cancel();
+    stopTTS();
     if (S.immersiveActive) exitImmersive();
   });
 
@@ -42,13 +48,20 @@
     sentenceHex: '#f59e0b',
     scrubbing: false,
     overlayRafPending: false,
+    // ── AI voice engine ──
+    voiceEngine: 'classic',       // 'classic' | 'kokoro'
+    kokoroVoice: 'af_bella',      // Kokoro speaker ID
+    kokoroModelCached: false,     // true once model fully downloaded
+    kokoroLoading: false,         // download in progress
+    _pendingTimings: null,        // timings array waiting for kokoro_chunk
   };
 
   // ── Prefs ──────────────────────────────────────────────────────────────────
   function loadPrefs(cb) {
     chrome.storage.sync.get([
       'speed','voiceName','shortcuts','highlightWord','highlightSentence',
-      'sentenceStyle','wordColor','sentenceHex'
+      'sentenceStyle','wordColor','sentenceHex',
+      'voiceEngine','kokoroVoice',
     ], (p) => {
       if (p.speed != null) S.speed = p.speed;
       if (p.voiceName) S.selectedVoiceName = p.voiceName;
@@ -58,6 +71,8 @@
       if (p.sentenceStyle) S.sentenceStyle = p.sentenceStyle;
       if (p.wordColor) S.wordColor = p.wordColor;
       if (p.sentenceHex) S.sentenceHex = p.sentenceHex;
+      if (p.voiceEngine) S.voiceEngine = p.voiceEngine;
+      if (p.kokoroVoice) S.kokoroVoice = p.kokoroVoice;
       cb();
     });
   }
@@ -69,15 +84,25 @@
         highlightWord: S.highlightWord, highlightSentence: S.highlightSentence,
         sentenceStyle: S.sentenceStyle, wordColor: S.wordColor,
         sentenceHex: S.sentenceHex,
+        voiceEngine: S.voiceEngine, kokoroVoice: S.kokoroVoice,
       });
     } catch(e) { /* extension reloaded mid-session, ignore */ }
   }
 
+  // kokoroModelCached lives in storage.local (not synced — model is device-specific)
+  function loadKokoroFlag(cb) {
+    chrome.storage.local.get(['kokoroModelCached'], (r) => {
+      S.kokoroModelCached = !!r.kokoroModelCached;
+      cb();
+    });
+  }
+  function saveKokoroFlag() {
+    chrome.storage.local.set({ kokoroModelCached: true });
+  }
+
   // ── DOM helpers ────────────────────────────────────────────────────────────
   function applyColors() {
-    // Word highlight color — used by .vox-word-active CSS rule
     document.documentElement.style.setProperty('--vox-word-color', S.wordColor);
-    // Sentence overlay color — parsed for use in placeSentenceOverlays
     const h = S.sentenceHex;
     const r = parseInt(h.slice(1,3),16), g = parseInt(h.slice(3,5),16), b = parseInt(h.slice(5,7),16);
     S._sentenceRgba = `rgba(${r},${g},${b},0.25)`;
@@ -92,7 +117,6 @@
   const SKIP_ROLES = new Set(['navigation','contentinfo','complementary','search']);
   const MATH_CLASS_HINTS = ['math','katex','mathjax','mjx','equation','formula','latex'];
   const CHAT_RESPONSE_SELECTORS = [
-    // Gemini: often no ChatGPT-style author role; specific blocks first
     '.model-response',
     '[data-testid="model-response"]',
     '[data-test-id="model-response"]',
@@ -104,7 +128,6 @@
     '[class*="message-content"]',
     '[class*="markdown"]',
     '[class*="prose"]',
-    // Broad fallbacks last — can match a huge wrapper; we narrow below.
     '[class*="response"]',
     'article',
   ];
@@ -173,17 +196,10 @@
     });
   }
 
-  /** Drop ancestors when a descendant is also a candidate (keep the inner / specific node). */
   function innermostOnlyCandidates(nodes) {
     return nodes.filter((n) => !nodes.some((m) => m !== n && n.contains(m)));
   }
 
-  /**
-   * When a turn has both a map (canvas) and prose as siblings, the outer
-   * container matches both; excluding any node with a canvas made us drop
-   * the real answer and fall back to <main> — wrapping the whole page.
-   * Pick a descendant subtree with no canvas (the text column only).
-   */
   function narrowChatRootExcludingMap(host) {
     if (!host || !host.querySelector('canvas')) return host;
     const prefer = host.querySelector(
@@ -200,56 +216,43 @@
       if (txt.length < 100) return;
       cands.push(el);
     });
-    // Prefer the largest no-canvas branch (prose), not a tiny map label.
     cands.sort((a, b) => (b.innerText || '').length - (a.innerText || '').length);
     return cands[0] || host;
   }
 
   function getRoot() {
-    // 0. AI chat pages: prefer tightest (smallest) latest assistant block — not a
-    // huge wrapper that also embeds maps/cards, which would wrap map label text.
     const chatCandidates = Array.from(
       document.querySelectorAll(CHAT_RESPONSE_SELECTORS.join(','))
-    )
-      .filter(el => {
-        if (shouldSkip(el)) return false;
-        const txt = (el.innerText || '').trim();
-        if (txt.length < 120) return false;
-        if (isMathLikeText(txt)) return false;
-        const rect = el.getBoundingClientRect();
-        return rect.width > 150 && rect.height > 40;
-      });
+    ).filter(el => {
+      if (shouldSkip(el)) return false;
+      const txt = (el.innerText || '').trim();
+      if (txt.length < 120) return false;
+      if (isMathLikeText(txt)) return false;
+      const rect = el.getBoundingClientRect();
+      return rect.width > 150 && rect.height > 40;
+    });
     if (chatCandidates.length) {
-      // Prefer the innermost match (e.g. model body, not a shell), then the latest
-      // in *document* order (stable when scrolled / when bottom pixels tie-break wrong).
       const specific = innermostOnlyCandidates(chatCandidates);
       const host = lastInDocumentOrder(specific.length ? specific : chatCandidates);
-      const picked = narrowChatRootExcludingMap(host);
-      return picked;
+      return narrowChatRootExcludingMap(host);
     }
 
-    // 1. Markdown body containers (GitHub, GitLab, HackMD, etc.)
     const mdBody = document.querySelector(
       '.markdown-body, [class*="markdown-body"], .markdown-content, .md-content, ' +
       '.post-content, .entry-content, .article-content'
     );
     if (mdBody && (mdBody.innerText||'').trim().length > 100) return mdBody;
 
-    // 2. Semantic tags
     const semantic = document.querySelector('article, main, [role="main"]');
     if (semantic) return semantic;
 
-    // 3. Prose containers (Perplexity, Notion, Medium etc. use [class*="prose"])
     const proseEls = Array.from(document.querySelectorAll('[class*="prose"]'))
       .filter(el => (el.innerText||'').trim().length > 200);
     if (proseEls.length) {
-      // Pick the smallest element with sufficient text — not the outermost wrapper
       proseEls.sort((a,b) => (a.innerText||'').length - (b.innerText||'').length);
       return proseEls[0];
     }
 
-    // 4. Score divs by DENSITY: content tags per total child elements
-    // This avoids picking outer wrappers (which have low density) over real content divs
     const candidates = Array.from(document.querySelectorAll('div, section'))
       .filter(el => (el.innerText||'').trim().length > 300 && !shouldSkip(el));
 
@@ -258,14 +261,12 @@
       const content = el.querySelectorAll('p,li,h1,h2,h3,h4').length;
       const total   = el.querySelectorAll('*').length || 1;
       const density = content / total;
-      // Also weight by absolute text length so we don't pick tiny dense boxes
       const score   = density * Math.log((el.innerText||'').length + 1);
       if (score > bestScore) { bestScore = score; best = el; }
     }
     return best || document.body;
   }
 
-  // Wait for dynamic content — for streaming SPAs, wait until text stops growing
   function waitForContent(cb, maxWait = 8000) {
     const start = Date.now();
     let lastLen = 0, stableMs = 0;
@@ -273,19 +274,16 @@
       const root = getRoot();
       const len  = (root.innerText||'').trim().length;
       const elapsed = Date.now() - start;
-
       if (len > 200) {
         if (len === lastLen) {
           stableMs += 300;
-          // Content stable for 600ms — safe to wrap
           if (stableMs >= 600) { cb(root); return; }
         } else {
-          stableMs = 0; // still changing — reset stability timer
+          stableMs = 0;
         }
       }
       lastLen = len;
-
-      if (elapsed > maxWait) { cb(root); return; } // give up, wrap what we have
+      if (elapsed > maxWait) { cb(root); return; }
       setTimeout(check, 300);
     }
     check();
@@ -352,29 +350,20 @@
 
   function rewrap(cb) {
     unwrap();
-
-    // Try synchronous wrap first — works immediately on static/fully-loaded pages
     const root = getRoot();
     wrapWords(root);
-
-    if (S.words.length > 0) {
-      if (cb) cb();
-      return;
-    }
-
-    // No words found from root — try body as fallback
+    if (S.words.length > 0) { if (cb) cb(); return; }
     if (root !== document.body) {
       wrapWords(document.body);
       if (S.words.length > 0) { if (cb) cb(); return; }
     }
-
-    // Still nothing — page is still loading (SPA/streaming), poll until stable
     waitForContent((r) => {
       if (!S.words.length) wrapWords(r);
       if (!S.words.length && r !== document.body) wrapWords(document.body);
       if (cb) cb();
     });
   }
+
   function unwrap() {
     document.querySelectorAll('.vox-word').forEach(sp =>
       sp.parentNode.replaceChild(document.createTextNode(sp.textContent), sp));
@@ -382,9 +371,6 @@
   }
 
   // ── Highlighting ──────────────────────────────────────────────────────────
-  // Uses CSS class on the word span (not overlays) so text is always visible.
-  // Sentence highlight is applied directly to sentence word spans.
-
   function placeSentenceOverlays(si) {
     document.querySelectorAll('.vox-sentence-active').forEach(e => e.classList.remove('vox-sentence-active'));
     if (!S.highlightSentence || si < 0) return;
@@ -417,12 +403,8 @@
       _activeWordEl = S.words[idx].el;
       _activeWordEl.classList.add('vox-word-active');
     }
-
-    // Sentence overlay: redraw and scroll when sentence changes
     const si = getSentenceIdx(idx);
     if (si !== S.currentSentence) {
-      // Scroll the first word of the new sentence to center before drawing overlays
-      // so getBoundingClientRect() is correct when we place them
       const firstWord = S.words[S.sentences[si]?.start];
       if (firstWord) {
         firstWord.el.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -437,7 +419,7 @@
     updateProgress();
   }
 
-  // ── Voices ─────────────────────────────────────────────────────────────────
+  // ── Classic voices (speechSynthesis) ──────────────────────────────────────
   function loadVoices() {
     const all = window.speechSynthesis.getVoices();
     const fkw = ['female','zira','samantha','victoria','karen','moira','veena',
@@ -466,15 +448,16 @@
     });
   }
 
-  // ── TTS ────────────────────────────────────────────────────────────────────
+  // ── TTS timing ─────────────────────────────────────────────────────────────
   const BASE_CPS = 13;        // estimated chars/sec at rate 1.0
-  const STARTUP_MS = 250;     // Chrome speech engine startup delay before audio begins
+  // Classic speech engine has ~250ms startup delay; Kokoro plays immediately (AudioContext)
+  function STARTUP_MS() { return S.voiceEngine === 'kokoro' ? 20 : 250; }
 
-  // { wordIdx, ms } — ms is when that word starts, relative to speech start + startup delay
-  function buildTimings(startIdx) {
+  function buildTimings(startIdx, endIdx) {
+    const end = endIdx ?? S.words.length;
     let offset = 0;
-    return S.words.slice(startIdx).map((w, i) => {
-      const ms = STARTUP_MS + (offset / (BASE_CPS * S.speed)) * 1000;
+    return S.words.slice(startIdx, end).map((w, i) => {
+      const ms = STARTUP_MS() + (offset / (BASE_CPS * S.speed)) * 1000;
       offset += w.text.length + 1;
       return { wordIdx: startIdx + i, ms };
     });
@@ -486,33 +469,28 @@
 
   function startTicker(timings, startMs) {
     stopTicker();
+    if (!timings.length) return;
     let ti = 0;
     S._ticker = setInterval(() => {
       if (!S.speaking || S.paused) return;
       const elapsed = Date.now() - startMs;
-
       while (ti + 1 < timings.length && timings[ti + 1].ms <= elapsed) ti++;
-
       const wordIdx = timings[ti].wordIdx;
-
       if (wordIdx > S.currentWord) {
         S.currentWord = wordIdx;
         highlightAt(wordIdx);
       } else if (wordIdx < S.currentWord) {
-        // onboundary moved ahead — sync ti forward, never go back
         while (ti + 1 < timings.length && timings[ti].wordIdx < S.currentWord) ti++;
       }
-
       if (ti >= timings.length - 1) stopTicker();
     }, 80);
   }
 
-  function speakFrom(idx) {
+  // ── Classic TTS (speechSynthesis) ──────────────────────────────────────────
+  function classicSpeakFrom(idx) {
     window.speechSynthesis.cancel();
-    stopTicker();
-    clearHL();
-    S.currentWord = idx;
-    S.currentSentence = -1;
+    stopTicker(); clearHL();
+    S.currentWord = idx; S.currentSentence = -1;
     if (!S.words.length) return;
 
     const text = S.words.slice(idx).map(w => w.text).join(' ');
@@ -520,15 +498,11 @@
     u.rate = S.speed; u.lang = 'en-US';
     if (S.voice) u.voice = S.voice;
 
-    // Highlight word 0 of this utterance immediately — ticker condition is
-    // wordIdx > S.currentWord so it would skip the first word otherwise
     highlightAt(idx);
-
     const timings = buildTimings(idx);
     const startMs = Date.now();
     startTicker(timings, startMs);
 
-    // onboundary: only accept forward movement
     u.onboundary = (ev) => {
       if (ev.name !== 'word') return;
       let cc = 0, wi = idx;
@@ -560,15 +534,61 @@
     updatePlayBtn(); setStatus('Playing', true);
   }
 
-  // Pause just stops ticker. Resume restarts speech from current word
-  // (re-syncing audio + timer cleanly — browser pause/resume drifts)
+  // ── Kokoro TTS ─────────────────────────────────────────────────────────────
+  // Builds sentence list for the offscreen doc: [{text, startWordIdx}]
+  function getSentencesFrom(startIdx) {
+    // Find which sentence startIdx belongs to
+    let startSi = getSentenceIdx(startIdx);
+    if (startSi < 0) startSi = 0;
+
+    const result = [];
+    for (let si = startSi; si < S.sentences.length; si++) {
+      const { start, end } = S.sentences[si];
+      const text = S.words.slice(start, end + 1).map(w => w.text).join(' ');
+      if (text.trim()) result.push({ text, startWordIdx: start });
+    }
+    return result;
+  }
+
+  function kokoroSpeakFrom(idx) {
+    chrome.runtime.sendMessage({ action: 'kokoro_stop' }).catch(() => {});
+    stopTicker(); clearHL();
+    S.currentWord = idx; S.currentSentence = -1;
+    if (!S.words.length) return;
+
+    const sentences = getSentencesFrom(idx);
+    if (!sentences.length) return;
+
+    S.speaking = true; S.paused = false;
+    document.documentElement.classList.add('vox-reading');
+    highlightAt(idx);
+    updatePlayBtn(); setStatus('Generating…', true);
+
+    chrome.runtime.sendMessage({
+      action: 'kokoro_speak',
+      sentences,
+      voice: S.kokoroVoice,
+      speed: S.speed,
+    }).catch(() => {});
+  }
+
+  // ── Engine dispatcher ──────────────────────────────────────────────────────
+  function speakFrom(idx) {
+    if (S.voiceEngine === 'kokoro') kokoroSpeakFrom(idx);
+    else classicSpeakFrom(idx);
+  }
+
   function pauseResume() {
     if (!S.speaking) return;
     if (S.paused) {
-      speakFrom(S.currentWord); // restart cleanly from where we left off
+      speakFrom(S.currentWord); // re-synthesize from current position
     } else {
       stopTicker();
-      window.speechSynthesis.pause();
+      if (S.voiceEngine === 'kokoro') {
+        chrome.runtime.sendMessage({ action: 'kokoro_stop' }).catch(() => {});
+      } else {
+        window.speechSynthesis.pause();
+      }
       S.paused = true;
       setStatus('Paused');
       updatePlayBtn();
@@ -576,7 +596,12 @@
   }
 
   function stop(reset = false) {
-    window.speechSynthesis.cancel(); stopTicker(); clearHL();
+    if (S.voiceEngine === 'kokoro') {
+      chrome.runtime.sendMessage({ action: 'kokoro_stop' }).catch(() => {});
+    } else {
+      window.speechSynthesis.cancel();
+    }
+    stopTicker(); clearHL();
     S.speaking = false; S.paused = false;
     if (reset) S.currentWord = 0;
     document.documentElement.classList.remove('vox-reading');
@@ -598,7 +623,6 @@
     else { S.currentWord = t; highlightAt(t); }
   }
 
-  // Find the first word visible in the viewport (for play-from-scroll-position)
   function findFirstVisibleWordIdx() {
     if (!S.words.length) return 0;
     for (let i = 0; i < S.words.length; i++) {
@@ -608,7 +632,6 @@
     return 0;
   }
 
-  // Selection → start reading from that word onward with full highlighting
   function handleSel(selText, anchor) {
     function findAnchorIdx() {
       if (!anchor || !S.words.length) return -1;
@@ -616,20 +639,16 @@
       while (el && !el.classList?.contains('vox-word')) el = el.parentElement;
       return (el && el.dataset.voxIndex != null) ? parseInt(el.dataset.voxIndex) : -1;
     }
-
     function findByText(text) {
       const first = text.trim().split(/\s+/)[0].replace(/\W/g, '').toLowerCase();
       if (!first) return -1;
       return S.words.findIndex(w => w.text.replace(/\W/g, '').toLowerCase() === first);
     }
-
     if (S.words.length) {
       let idx = findAnchorIdx();
       if (idx < 0) idx = findByText(selText);
       if (idx >= 0) { speakFrom(idx); return; }
     }
-
-    // Words not wrapped yet — rewrap then find by text (old anchor is detached)
     rewrap(() => {
       const idx = findByText(selText);
       speakFrom(idx >= 0 ? idx : 0);
@@ -663,7 +682,6 @@
         </div>
         <div id="vox-immersive-content"></div>
       </div>`;
-    // Populate content safely via textContent to prevent XSS
     const contentEl = ov.querySelector('#vox-immersive-content');
     blocks.forEach(b => {
       const tag = b.tag.startsWith('h') ? b.tag : 'p';
@@ -675,7 +693,6 @@
     S.immersiveOverlay = ov; S.immersiveActive = true;
     document.getElementById('vox-immersive-exit').onclick = exitImmersive;
 
-    // Sentence nav
     document.getElementById('vox-imm-prev').onclick = () => {
       const si = Math.max(0, S.currentSentence - 1);
       if (S.sentences[si]) speakFrom(S.sentences[si].start);
@@ -701,14 +718,12 @@
   }
 
   // ── Audio export ───────────────────────────────────────────────────────────
-  // Note: Web Speech API routes to system audio, not WebAudio — in-page
-  // recording cannot capture it. Guide user to use system audio recording.
   function exportAudio() {
     const doExport = () => {
       setStatus('Use system recorder to capture audio', false);
-      // Speak the content so the user can record it externally
       const text = S.words.map(w => w.text).join(' ');
       if (!text) return;
+      // Always use classic engine for export (Web Speech routes to system audio)
       const u = new SpeechSynthesisUtterance(text);
       u.rate = S.speed; if (S.voice) u.voice = S.voice;
       u.onend = () => setStatus('Done');
@@ -718,91 +733,202 @@
     doExport();
   }
 
+  // ── Kokoro UI helpers ──────────────────────────────────────────────────────
+  function setKokoroUIState(state) {
+    // state: 'idle' | 'downloading' | 'ready' | 'error'
+    const dlWrap   = document.getElementById('vox-dl-wrap');
+    const dlBtn    = document.getElementById('btn-kokoro-dl');
+    const dlBar    = document.getElementById('vox-dl-bar-wrap');
+    const voiceWrap = document.getElementById('vox-kokoro-voice-wrap');
+    const dlPct    = document.getElementById('vox-dl-pct');
+
+    if (!dlWrap) return;
+
+    if (state === 'idle') {
+      dlWrap.classList.remove('vs-hidden');
+      dlBtn.classList.remove('vs-hidden');
+      dlBar.classList.add('vs-hidden');
+      if (voiceWrap) voiceWrap.classList.add('vs-hidden');
+    } else if (state === 'downloading') {
+      dlWrap.classList.remove('vs-hidden');
+      dlBtn.classList.add('vs-hidden');
+      dlBar.classList.remove('vs-hidden');
+      if (voiceWrap) voiceWrap.classList.add('vs-hidden');
+    } else if (state === 'ready') {
+      dlWrap.classList.add('vs-hidden');
+      if (voiceWrap) voiceWrap.classList.remove('vs-hidden');
+    }
+  }
+
+  function updateDownloadBar(loaded, total) {
+    const fill = document.getElementById('vox-dl-bar-fill');
+    const pct  = document.getElementById('vox-dl-pct');
+    if (!fill || !total) return;
+    const p = Math.round((loaded / total) * 100);
+    fill.style.width = p + '%';
+    if (pct) pct.textContent = p + '%';
+  }
+
+  function syncEngineUI() {
+    // Show/hide classic vs kokoro voice sections
+    const classicSection = document.getElementById('vox-classic-voice-section');
+    const kokoroSection  = document.getElementById('vox-kokoro-section');
+    const engClassic = document.getElementById('eng-classic');
+    const engKokoro  = document.getElementById('eng-kokoro');
+    if (classicSection) classicSection.classList.toggle('vs-hidden', S.voiceEngine === 'kokoro');
+    if (kokoroSection)  kokoroSection.classList.toggle('vs-hidden', S.voiceEngine === 'classic');
+    if (engClassic) engClassic.classList.toggle('active', S.voiceEngine === 'classic');
+    if (engKokoro)  engKokoro.classList.toggle('active', S.voiceEngine === 'kokoro');
+
+    if (S.voiceEngine === 'kokoro') {
+      if (S.kokoroModelCached) {
+        setKokoroUIState('ready');
+      } else if (S.kokoroLoading) {
+        setKokoroUIState('downloading');
+      } else {
+        setKokoroUIState('idle');
+      }
+    }
+  }
+
   // ── Player ─────────────────────────────────────────────────────────────────
   function createPlayer() {
     if (document.getElementById('vox-player')) {
       document.getElementById('vox-player').classList.remove('vox-hidden');
-      populateVoices(); return;
+      populateVoices(); syncEngineUI(); return;
     }
 
     const p = document.createElement('div');
     p.id = 'vox-player';
+    p.setAttribute('role', 'region');
+    p.setAttribute('aria-label', 'Vox Reader player');
+
     p.innerHTML = `
       <!-- Compact bar -->
       <div id="vox-bar">
-        <button class="vox-bar-btn" id="vox-back-bar" title="Back 15 words">
-          <span class="vox-skip-label"><span class="vox-skip-icon">↺</span><span>-15</span></span>
+        <button class="vox-bar-btn" id="vox-back-bar" title="Back 15 words" aria-label="Skip back 15 words">
+          <span class="vox-skip-label" aria-hidden="true"><span class="vox-skip-icon">↺</span><span>-15</span></span>
         </button>
-        <button id="vox-playpause-bar">▶</button>
-        <button class="vox-bar-btn" id="vox-fwd-bar" title="Forward 15 words">
-          <span class="vox-skip-label"><span class="vox-skip-icon">↻</span><span>+15</span></span>
+        <button id="vox-playpause-bar" aria-label="Play">▶</button>
+        <button class="vox-bar-btn" id="vox-fwd-bar" title="Forward 15 words" aria-label="Skip forward 15 words">
+          <span class="vox-skip-label" aria-hidden="true"><span class="vox-skip-icon">↻</span><span>+15</span></span>
         </button>
-        <div class="vox-div"></div>
+        <div class="vox-div" aria-hidden="true"></div>
         <div id="vox-progress-wrap">
-          <input type="range" id="vox-progress" min="0" max="1000" value="0">
+          <input type="range" id="vox-progress" min="0" max="1000" value="0"
+            aria-label="Reading progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
         </div>
-        <div class="vox-div"></div>
-        <button class="vox-bar-btn" id="vox-immersive-btn" title="Immersive reader">☰</button>
-        <button id="vox-speed-pill">1.0×</button>
-        <button class="vox-bar-btn" id="vox-settings-btn" title="Settings">⚙</button>
-        <button class="vox-bar-btn" id="vox-close-bar" title="Close">✕</button>
+        <div class="vox-div" aria-hidden="true"></div>
+        <button class="vox-bar-btn" id="vox-immersive-btn" title="Immersive reader" aria-label="Toggle immersive reader">☰</button>
+        <button id="vox-speed-pill" aria-label="Playback speed">1.0×</button>
+        <button class="vox-bar-btn" id="vox-settings-btn" title="Settings" aria-label="Open settings">⚙</button>
+        <button class="vox-bar-btn" id="vox-close-bar" title="Close" aria-label="Close player">✕</button>
       </div>
 
-      <!-- Settings panel (replaces bar) -->
-      <div id="vox-settings">
+      <!-- Settings panel -->
+      <div id="vox-settings" role="dialog" aria-label="Voice settings">
         <div id="vox-settings-header">
           <span class="vox-settings-title">Settings</span>
-          <button id="vox-settings-close">✕</button>
+          <button id="vox-settings-close" aria-label="Close settings">✕</button>
         </div>
         <div id="vox-settings-body">
 
           <div class="vs">
-            <div class="vs-label">Speed</div>
+            <div class="vs-label" id="lbl-speed">Speed</div>
             <div class="vs-speed-row">
-              <span class="vs-speed-dim">0.5×</span>
-              <input type="range" id="vox-speed-slider" min="0.5" max="3.0" step="0.05" value="1.0">
+              <span class="vs-speed-dim" aria-hidden="true">0.5×</span>
+              <input type="range" id="vox-speed-slider" min="0.5" max="3.0" step="0.05" value="1.0"
+                aria-labelledby="lbl-speed" aria-valuemin="0.5" aria-valuemax="3.0" aria-valuenow="1.0">
               <span class="vs-speed-val" id="vox-speed-val">1.0×</span>
             </div>
           </div>
 
+          <!-- Voice Engine toggle -->
           <div class="vs">
-            <div class="vs-label">Voice</div>
-            <select id="vox-voice-select"></select>
+            <div class="vs-label">Voice Engine</div>
+            <div class="vs-engine-row" role="group" aria-label="Voice engine selection">
+              <button class="vs-engine-btn ${S.voiceEngine==='classic'?'active':''}" id="eng-classic"
+                aria-pressed="${S.voiceEngine==='classic'}">Classic</button>
+              <button class="vs-engine-btn ${S.voiceEngine==='kokoro'?'active':''}" id="eng-kokoro"
+                aria-pressed="${S.voiceEngine==='kokoro'}">AI Neural</button>
+            </div>
+          </div>
+
+          <!-- Classic voice select -->
+          <div class="vs ${S.voiceEngine==='kokoro'?'vs-hidden':''}" id="vox-classic-voice-section">
+            <div class="vs-label"><label for="vox-voice-select">Voice</label></div>
+            <select id="vox-voice-select" aria-label="Select system voice"></select>
+          </div>
+
+          <!-- Kokoro section -->
+          <div class="vs ${S.voiceEngine==='classic'?'vs-hidden':''}" id="vox-kokoro-section">
+            <div class="vs-kokoro-info">Kokoro AI · ~80MB download · works offline</div>
+            <div id="vox-dl-wrap" class="${S.kokoroModelCached?'vs-hidden':''}">
+              <button class="vs-kokoro-dl" id="btn-kokoro-dl">⬇ Download AI Voice</button>
+              <div id="vox-dl-bar-wrap" class="vs-hidden" aria-live="polite" aria-label="Download progress">
+                <div id="vox-dl-bar-track" aria-hidden="true"><div id="vox-dl-bar-fill"></div></div>
+                <span id="vox-dl-pct">0%</span>
+              </div>
+            </div>
+            <div id="vox-kokoro-voice-wrap" class="${S.kokoroModelCached?'':'vs-hidden'}">
+              <div class="vs-label"><label for="vox-kokoro-voice-select">AI Voice</label></div>
+              <select id="vox-kokoro-voice-select" aria-label="Select AI voice">
+                <option value="af_bella">Bella (Female)</option>
+                <option value="af_sarah">Sarah (Female)</option>
+                <option value="af_sky">Sky (Female)</option>
+                <option value="af_nicole">Nicole (Female)</option>
+                <option value="am_adam">Adam (Male)</option>
+                <option value="am_michael">Michael (Male)</option>
+              </select>
+            </div>
           </div>
 
           <div class="vs">
             <div class="vs-label">Highlight</div>
             <div class="vs-toggle-row">
-              <span class="vs-toggle-label">Highlight word</span>
-              <button class="vs-toggle ${S.highlightWord?'on':''}" id="tog-word"></button>
+              <span class="vs-toggle-label" id="lbl-hl-word">Highlight word</span>
+              <button class="vs-toggle ${S.highlightWord?'on':''}" id="tog-word"
+                role="switch" aria-checked="${S.highlightWord}" aria-labelledby="lbl-hl-word"></button>
             </div>
             <div class="vs-toggle-row">
-              <span class="vs-toggle-label">Highlight sentence</span>
-              <button class="vs-toggle ${S.highlightSentence?'on':''}" id="tog-sentence"></button>
+              <span class="vs-toggle-label" id="lbl-hl-sent">Highlight sentence</span>
+              <button class="vs-toggle ${S.highlightSentence?'on':''}" id="tog-sentence"
+                role="switch" aria-checked="${S.highlightSentence}" aria-labelledby="lbl-hl-sent"></button>
             </div>
-            <div class="vs-hl-style">
-              <button class="vs-hl-btn ${S.sentenceStyle==='bg'?'active':''}" id="hl-bg">Background</button>
-              <button class="vs-hl-btn ${S.sentenceStyle==='underline'?'active':''}" id="hl-ul">Underline</button>
+            <div class="vs-hl-style" role="group" aria-label="Highlight style">
+              <button class="vs-hl-btn ${S.sentenceStyle==='bg'?'active':''}" id="hl-bg"
+                aria-pressed="${S.sentenceStyle==='bg'}">Background</button>
+              <button class="vs-hl-btn ${S.sentenceStyle==='underline'?'active':''}" id="hl-ul"
+                aria-pressed="${S.sentenceStyle==='underline'}">Underline</button>
             </div>
             <div class="vs-color-row">
               <div class="vs-color-item">
-                <div class="vs-color-item-label">Word color</div>
+                <label class="vs-color-item-label" for="hex-word">Word color</label>
                 <input class="vs-hex-input" id="hex-word" maxlength="7" value="${S.wordColor}" placeholder="#f59e0b">
-                <div class="vs-hex-preview" id="prev-word" style="background:${S.wordColor}"></div>
+                <div class="vs-hex-preview" id="prev-word" style="background:${S.wordColor}" aria-hidden="true"></div>
               </div>
               <div class="vs-color-item">
-                <div class="vs-color-item-label">Sentence color</div>
+                <label class="vs-color-item-label" for="hex-sentence">Sentence color</label>
                 <input class="vs-hex-input" id="hex-sentence" maxlength="7" value="${S.sentenceHex}" placeholder="#f59e0b">
-                <div class="vs-hex-preview" id="prev-sentence" style="background:${S.sentenceHex}"></div>
+                <div class="vs-hex-preview" id="prev-sentence" style="background:${S.sentenceHex}" aria-hidden="true"></div>
               </div>
             </div>
           </div>
 
           <div class="vs">
             <div class="vs-label">Shortcuts (Option/Alt + key)</div>
-            <div class="vs-sc-row"><span>Play/Pause</span><input class="vs-sc-input" id="sc-play" maxlength="1"></div>
-            <div class="vs-sc-row"><span>Stop</span><input class="vs-sc-input" id="sc-stop" maxlength="1"></div>
-            <div class="vs-sc-row"><span>Read selection</span><input class="vs-sc-input" id="sc-read" maxlength="1"></div>
+            <div class="vs-sc-row">
+              <label for="sc-play">Play/Pause</label>
+              <input class="vs-sc-input" id="sc-play" maxlength="1" aria-label="Play/Pause shortcut key">
+            </div>
+            <div class="vs-sc-row">
+              <label for="sc-stop">Stop</label>
+              <input class="vs-sc-input" id="sc-stop" maxlength="1" aria-label="Stop shortcut key">
+            </div>
+            <div class="vs-sc-row">
+              <label for="sc-read">Read selection</label>
+              <input class="vs-sc-input" id="sc-read" maxlength="1" aria-label="Read selection shortcut key">
+            </div>
             <button class="vs-save-btn" id="sc-save">Save shortcuts</button>
           </div>
 
@@ -814,11 +940,10 @@
             </div>
           </div>
 
-          <div id="vox-status">Ready</div>
+          <div id="vox-status" role="status" aria-live="polite">Ready</div>
         </div>
       </div>`;
 
-    // Append to <html> root not <body> — SPAs like Perplexity replace body on navigation
     document.documentElement.appendChild(p);
     S.playerEl = p;
     chrome.storage.sync.get(['barX','barY'], (pos) => {
@@ -839,13 +964,15 @@
     document.getElementById('sc-play').value = S.shortcuts.play;
     document.getElementById('sc-stop').value = S.shortcuts.stop;
     document.getElementById('sc-read').value = S.shortcuts.read;
+    // Set saved Kokoro voice in select
+    const kvSel = document.getElementById('vox-kokoro-voice-select');
+    if (kvSel) kvSel.value = S.kokoroVoice;
+    syncEngineUI();
   }
 
   function bindEvents() {
-    // Close bar
     document.getElementById('vox-close-bar').onclick = () => { stop(false); S.playerEl.classList.add('vox-hidden'); };
 
-    // Capture selection on mousedown — clicking a button clears it before onclick fires
     let _capturedSel = null;
     document.getElementById('vox-playpause-bar').addEventListener('mousedown', () => {
       const sel = window.getSelection();
@@ -853,7 +980,6 @@
       _capturedSel = text ? { text, anchor: sel.anchorNode } : null;
     });
 
-    // Play/pause
     document.getElementById('vox-playpause-bar').onclick = () => {
       if (!S.speaking && !S.paused) {
         const captured = _capturedSel; _capturedSel = null;
@@ -862,7 +988,6 @@
         } else if (!S.words.length) {
           rewrap(() => speakFrom(findFirstVisibleWordIdx()));
         } else {
-          // Resume from first visible word if at start, otherwise current position
           const startIdx = S.currentWord === 0 ? findFirstVisibleWordIdx() : S.currentWord;
           speakFrom(startIdx);
         }
@@ -873,7 +998,6 @@
     document.getElementById('vox-fwd-bar').onclick = skipFwd;
     document.getElementById('vox-immersive-btn').onclick = toggleImmersive;
 
-    // Speed pill: click cycles speeds
     const speeds = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0];
     document.getElementById('vox-speed-pill').onclick = () => {
       const ci = speeds.findIndex(s => Math.abs(s - S.speed) < 0.01);
@@ -886,7 +1010,6 @@
       if (S.speaking) { const i = S.currentWord; speakFrom(i); }
     };
 
-    // Settings open/close — panel slides below bar, bar stays visible for dragging
     document.getElementById('vox-settings-btn').onclick = () => {
       S.settingsOpen = !S.settingsOpen;
       document.getElementById('vox-settings').classList.toggle('open', S.settingsOpen);
@@ -896,7 +1019,6 @@
       document.getElementById('vox-settings').classList.remove('open');
     };
 
-    // Speed slider — only restart on mouseup to avoid choppiness
     const speedSlider = document.getElementById('vox-speed-slider');
     speedSlider.oninput = (e) => {
       S.speed = parseFloat(e.target.value);
@@ -910,7 +1032,7 @@
       if (S.speaking) { const i = S.currentWord; speakFrom(i); }
     };
 
-    // Voice — resume from position
+    // Classic voice select
     document.getElementById('vox-voice-select').onchange = (e) => {
       const v = window.speechSynthesis.getVoices().find(v => v.name === e.target.value);
       if (v) {
@@ -919,7 +1041,38 @@
       }
     };
 
-    // Progress — scrub only on mouseup to avoid choppy replays
+    // Voice engine toggle
+    document.getElementById('eng-classic').onclick = () => {
+      if (S.voiceEngine === 'classic') return;
+      stop(false);
+      S.voiceEngine = 'classic'; savePrefs(); syncEngineUI();
+      document.getElementById('eng-classic').setAttribute('aria-pressed', 'true');
+      document.getElementById('eng-kokoro').setAttribute('aria-pressed', 'false');
+    };
+    document.getElementById('eng-kokoro').onclick = () => {
+      if (S.voiceEngine === 'kokoro') return;
+      stop(false);
+      S.voiceEngine = 'kokoro'; savePrefs(); syncEngineUI();
+      document.getElementById('eng-classic').setAttribute('aria-pressed', 'false');
+      document.getElementById('eng-kokoro').setAttribute('aria-pressed', 'true');
+    };
+
+    // Kokoro download button
+    document.getElementById('btn-kokoro-dl').onclick = () => {
+      if (S.kokoroLoading) return;
+      S.kokoroLoading = true;
+      setKokoroUIState('downloading');
+      setStatus('Downloading AI voice…', true);
+      chrome.runtime.sendMessage({ action: 'kokoro_load' }).catch(() => {});
+    };
+
+    // Kokoro voice select
+    document.getElementById('vox-kokoro-voice-select').onchange = (e) => {
+      S.kokoroVoice = e.target.value; savePrefs();
+      if (S.speaking) { const i = S.currentWord; stop(false); speakFrom(i); }
+    };
+
+    // Progress bar
     const prog = document.getElementById('vox-progress');
     prog.oninput = () => { S.scrubbing = true; };
     prog.onchange = (e) => {
@@ -933,28 +1086,34 @@
     // Highlight toggles
     document.getElementById('tog-word').onclick = (e) => {
       S.highlightWord = !S.highlightWord;
-      e.target.classList.toggle('on', S.highlightWord); savePrefs();
+      e.target.classList.toggle('on', S.highlightWord);
+      e.target.setAttribute('aria-checked', String(S.highlightWord));
+      savePrefs();
     };
     document.getElementById('tog-sentence').onclick = (e) => {
       S.highlightSentence = !S.highlightSentence;
-      e.target.classList.toggle('on', S.highlightSentence); savePrefs();
+      e.target.classList.toggle('on', S.highlightSentence);
+      e.target.setAttribute('aria-checked', String(S.highlightSentence));
+      savePrefs();
     };
 
-    // Highlight style
     document.getElementById('hl-bg').onclick = () => {
       S.sentenceStyle = 'bg';
       document.getElementById('hl-bg').classList.add('active');
+      document.getElementById('hl-bg').setAttribute('aria-pressed','true');
       document.getElementById('hl-ul').classList.remove('active');
+      document.getElementById('hl-ul').setAttribute('aria-pressed','false');
       applyColors(); savePrefs();
     };
     document.getElementById('hl-ul').onclick = () => {
       S.sentenceStyle = 'underline';
       document.getElementById('hl-ul').classList.add('active');
+      document.getElementById('hl-ul').setAttribute('aria-pressed','true');
       document.getElementById('hl-bg').classList.remove('active');
+      document.getElementById('hl-bg').setAttribute('aria-pressed','false');
       applyColors(); savePrefs();
     };
 
-    // Hex color inputs
     function bindHex(inputId, previewId, setter) {
       const el = document.getElementById(inputId);
       const pv = document.getElementById(previewId);
@@ -971,7 +1130,6 @@
     bindHex('hex-word','prev-word', v => S.wordColor = v);
     bindHex('hex-sentence','prev-sentence', v => S.sentenceHex = v);
 
-    // Shortcuts
     document.getElementById('sc-save').onclick = () => {
       S.shortcuts.play = document.getElementById('sc-play').value || 'p';
       S.shortcuts.stop = document.getElementById('sc-stop').value || 's';
@@ -979,7 +1137,6 @@
       savePrefs(); setStatus('Saved!');
     };
 
-    // Export
     document.getElementById('exp-pdf').onclick = () => window.print();
     document.getElementById('exp-mp3').onclick = exportAudio;
 
@@ -994,13 +1151,11 @@
     // Draggable bar
     const bar = document.getElementById('vox-bar');
     bar.addEventListener('mousedown', (e) => {
-      // Don't drag if clicking a button/input
       if (e.target.closest('button,input,select')) return;
       S.dragging = true;
       const rect = S.playerEl.getBoundingClientRect();
       S.dragOffsetX = e.clientX - rect.left;
       S.dragOffsetY = e.clientY - rect.top;
-      // Switch from centered transform to absolute position
       S.playerEl.style.left = rect.left + 'px';
       S.playerEl.style.top = rect.top + 'px';
       S.playerEl.style.bottom = 'auto';
@@ -1023,7 +1178,10 @@
 
   function updatePlayBtn() {
     const btn = document.getElementById('vox-playpause-bar');
-    if (btn) btn.textContent = (S.speaking && !S.paused) ? '⏸' : '▶';
+    if (!btn) return;
+    const playing = S.speaking && !S.paused;
+    btn.textContent = playing ? '⏸' : '▶';
+    btn.setAttribute('aria-label', playing ? 'Pause' : 'Play');
   }
 
   function setStatus(text, active = false) {
@@ -1035,19 +1193,70 @@
     if (S.scrubbing) return;
     const el = document.getElementById('vox-progress');
     if (el && S.words.length > 1) {
-      el.value = Math.floor((S.currentWord / (S.words.length - 1)) * 1000);
+      const val = Math.floor((S.currentWord / (S.words.length - 1)) * 1000);
+      el.value = val;
+      el.setAttribute('aria-valuenow', Math.round((S.currentWord / (S.words.length - 1)) * 100));
     }
   }
 
   // ── Message + keyboard ─────────────────────────────────────────────────────
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg.action === 'toggle_player') {
-      loadPrefs(() => createPlayer());
+      loadPrefs(() => loadKokoroFlag(() => createPlayer()));
+      return;
+    }
+
+    // Kokoro responses from offscreen (routed through SW)
+    if (msg.action === 'kokoro_chunk') {
+      // A sentence just started playing — reset ticker to this sentence's word range
+      const si = getSentenceIdx(msg.startWordIdx);
+      const endIdx = si >= 0 && S.sentences[si] ? S.sentences[si].end + 1 : undefined;
+      const timings = buildTimings(msg.startWordIdx, endIdx);
+      S.currentWord = msg.startWordIdx;
+      startTicker(timings, msg.startedAt);
+      setStatus('Playing', true);
+      updatePlayBtn();
+      return;
+    }
+
+    if (msg.action === 'kokoro_end') {
+      stopTicker(); clearHL();
+      S.speaking = false; S.paused = false;
+      document.documentElement.classList.remove('vox-reading');
+      updatePlayBtn(); setStatus('Done'); S.currentWord = 0;
+      return;
+    }
+
+    if (msg.action === 'kokoro_progress') {
+      S.kokoroLoading = true;
+      const pct = msg.total > 0 ? Math.round((msg.loaded / msg.total) * 100) : 0;
+      setStatus(`Downloading AI voice… ${pct}%`, true);
+      if (msg.total > 0) updateDownloadBar(msg.loaded, msg.total);
+      setKokoroUIState('downloading');
+      return;
+    }
+
+    if (msg.action === 'kokoro_ready') {
+      S.kokoroModelCached = true; S.kokoroLoading = false;
+      saveKokoroFlag();
+      setKokoroUIState('ready');
+      setStatus('AI voice ready — press Play', true);
+      return;
+    }
+
+    if (msg.action === 'kokoro_error') {
+      S.speaking = false; S.kokoroLoading = false;
+      stopTicker(); clearHL();
+      document.documentElement.classList.remove('vox-reading');
+      updatePlayBtn();
+      setStatus('Error: ' + (msg.error || 'unknown'));
+      setKokoroUIState(S.kokoroModelCached ? 'ready' : 'idle');
+      return;
     }
   });
 
   document.addEventListener('keydown', (e) => {
-    const mod = e.altKey;  // always use Alt/Option on all platforms (Cmd conflicts with browser shortcuts)
+    const mod = e.altKey;
     if (!mod) return;
     if (e.key === S.shortcuts.play) {
       e.preventDefault();

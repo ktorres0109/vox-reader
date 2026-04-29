@@ -1,3 +1,5 @@
 .DS_Store
 content/.DS_Store
 popup/.DS_Store
+# vendor/ contains large pre-built bundles — download with: zsh tools/fetch-deps.sh
+vendor/
