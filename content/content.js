@@ -735,28 +735,16 @@
 
   // ── Kokoro UI helpers ──────────────────────────────────────────────────────
   function setKokoroUIState(state) {
-    // state: 'idle' | 'downloading' | 'ready' | 'error'
-    const dlWrap   = document.getElementById('vox-dl-wrap');
-    const dlBtn    = document.getElementById('btn-kokoro-dl');
+    // state: 'downloading' | 'ready'
     const dlBar    = document.getElementById('vox-dl-bar-wrap');
-    const voiceWrap = document.getElementById('vox-kokoro-voice-wrap');
-    const dlPct    = document.getElementById('vox-dl-pct');
-
-    if (!dlWrap) return;
-
-    if (state === 'idle') {
-      dlWrap.classList.remove('vs-hidden');
-      dlBtn.classList.remove('vs-hidden');
-      dlBar.classList.add('vs-hidden');
-      if (voiceWrap) voiceWrap.classList.add('vs-hidden');
-    } else if (state === 'downloading') {
-      dlWrap.classList.remove('vs-hidden');
-      dlBtn.classList.add('vs-hidden');
+    const voiceSel = document.getElementById('vox-kokoro-voice-select');
+    if (!dlBar) return;
+    if (state === 'downloading') {
       dlBar.classList.remove('vs-hidden');
-      if (voiceWrap) voiceWrap.classList.add('vs-hidden');
+      if (voiceSel) voiceSel.classList.add('vs-hidden');
     } else if (state === 'ready') {
-      dlWrap.classList.add('vs-hidden');
-      if (voiceWrap) voiceWrap.classList.remove('vs-hidden');
+      dlBar.classList.add('vs-hidden');
+      if (voiceSel) voiceSel.classList.remove('vs-hidden');
     }
   }
 
@@ -783,10 +771,8 @@
     if (S.voiceEngine === 'kokoro') {
       if (S.kokoroModelCached) {
         setKokoroUIState('ready');
-      } else if (S.kokoroLoading) {
-        setKokoroUIState('downloading');
       } else {
-        setKokoroUIState('idle');
+        setKokoroUIState('downloading');
       }
     }
   }
@@ -852,25 +838,20 @@
             <div class="${S.voiceEngine==='kokoro'?'vs-hidden':''}" id="vox-classic-voice-section" style="margin-top:6px">
               <select id="vox-voice-select" aria-label="Select voice"></select>
             </div>
-            <!-- Kokoro voice / download -->
+            <!-- Kokoro voice — auto-loads on switch, no manual download button -->
             <div class="${S.voiceEngine==='classic'?'vs-hidden':''}" id="vox-kokoro-section" style="margin-top:6px">
-              <div id="vox-dl-wrap" class="${S.kokoroModelCached?'vs-hidden':''}">
-                <button class="vs-kokoro-dl" id="btn-kokoro-dl">⬇ Download AI Voice (~80MB)</button>
-                <div id="vox-dl-bar-wrap" class="vs-hidden" aria-live="polite">
-                  <div id="vox-dl-bar-track"><div id="vox-dl-bar-fill"></div></div>
-                  <span id="vox-dl-pct">0%</span>
-                </div>
+              <div id="vox-dl-bar-wrap" class="vs-hidden" aria-live="polite">
+                <div id="vox-dl-bar-track"><div id="vox-dl-bar-fill"></div></div>
+                <span id="vox-dl-pct">0%</span>
               </div>
-              <div id="vox-kokoro-voice-wrap" class="${S.kokoroModelCached?'':'vs-hidden'}">
-                <select id="vox-kokoro-voice-select" aria-label="AI voice">
-                  <option value="af_bella">Bella (F)</option>
-                  <option value="af_sarah">Sarah (F)</option>
-                  <option value="af_sky">Sky (F)</option>
-                  <option value="af_nicole">Nicole (F)</option>
-                  <option value="am_adam">Adam (M)</option>
-                  <option value="am_michael">Michael (M)</option>
-                </select>
-              </div>
+              <select id="vox-kokoro-voice-select" aria-label="AI voice" class="${S.kokoroModelCached?'':'vs-hidden'}">
+                <option value="af_bella">Bella (F)</option>
+                <option value="af_sarah">Sarah (F)</option>
+                <option value="af_sky">Sky (F)</option>
+                <option value="af_nicole">Nicole (F)</option>
+                <option value="am_adam">Adam (M)</option>
+                <option value="am_michael">Michael (M)</option>
+              </select>
             </div>
           </div>
 
@@ -1028,15 +1009,12 @@
       S.voiceEngine = 'kokoro'; savePrefs(); syncEngineUI();
       document.getElementById('eng-classic').setAttribute('aria-pressed', 'false');
       document.getElementById('eng-kokoro').setAttribute('aria-pressed', 'true');
-    };
-
-    // Kokoro download button
-    document.getElementById('btn-kokoro-dl').onclick = () => {
-      if (S.kokoroLoading) return;
-      S.kokoroLoading = true;
-      setKokoroUIState('downloading');
-      setStatus('Downloading AI voice…', true);
-      chrome.runtime.sendMessage({ action: 'kokoro_load' }).catch(() => {});
+      // Auto-trigger model load if not already cached/loading
+      if (!S.kokoroModelCached && !S.kokoroLoading) {
+        S.kokoroLoading = true;
+        setStatus('Loading AI voice… (~80MB, one-time)', true);
+        chrome.runtime.sendMessage({ action: 'kokoro_load' }).catch(() => {});
+      }
     };
 
     // Kokoro voice select
