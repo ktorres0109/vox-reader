@@ -4,10 +4,12 @@
 
 import { pipeline, env } from '../vendor/transformers.min.js';
 
-// WASM binaries fetched from CDN on first use, cached by browser.
-// fetch() to external URLs is NOT blocked by extension CSP (only script-src is restricted).
-env.backends.onnx.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/';
-env.backends.onnx.wasm.numThreads = 1; // single-thread avoids SharedArrayBuffer requirement
+// transformers.js v3 auto-configures wasmPaths to its own CDN and sets numThreads=1
+// when crossOriginIsolated is false (which it is in offscreen docs without COOP headers).
+// Do NOT override wasmPaths — transformers.js already picks the correct version.
+
+// Suppress verbose logging
+env.logging = false;
 
 // ── State ──────────────────────────────────────────────────────────────────
 let synthesizer = null;
@@ -122,6 +124,10 @@ function send(msg) {
 }
 
 // ── Message listener ───────────────────────────────────────────────────────
+// Signal SW that we're ready to receive messages. SW may have buffered a
+// pending action while waiting for this document to finish loading.
+chrome.runtime.sendMessage({ action: 'offscreen_ready' }).catch(() => {});
+
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.target !== 'offscreen') return;
 
