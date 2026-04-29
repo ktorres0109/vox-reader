@@ -833,114 +833,87 @@
         </div>
         <div id="vox-settings-body">
 
+          <!-- Speed + Voice in one compact row area -->
           <div class="vs">
-            <div class="vs-label" id="lbl-speed">Speed</div>
             <div class="vs-speed-row">
-              <span class="vs-speed-dim" aria-hidden="true">0.5×</span>
-              <input type="range" id="vox-speed-slider" min="0.5" max="3.0" step="0.05" value="1.0"
-                aria-labelledby="lbl-speed" aria-valuemin="0.5" aria-valuemax="3.0" aria-valuenow="1.0">
+              <span class="vs-speed-dim">0.5×</span>
+              <input type="range" id="vox-speed-slider" min="0.5" max="3.0" step="0.05" value="1.0" aria-label="Speed">
               <span class="vs-speed-val" id="vox-speed-val">1.0×</span>
             </div>
           </div>
 
-          <!-- Voice Engine toggle -->
+          <!-- Voice Engine + voice select — single compact section -->
           <div class="vs">
-            <div class="vs-label">Voice Engine</div>
-            <div class="vs-engine-row" role="group" aria-label="Voice engine selection">
-              <button class="vs-engine-btn ${S.voiceEngine==='classic'?'active':''}" id="eng-classic"
-                aria-pressed="${S.voiceEngine==='classic'}">Classic</button>
-              <button class="vs-engine-btn ${S.voiceEngine==='kokoro'?'active':''}" id="eng-kokoro"
-                aria-pressed="${S.voiceEngine==='kokoro'}">AI Neural</button>
+            <div class="vs-engine-row" role="group" aria-label="Voice engine">
+              <button class="vs-engine-btn ${S.voiceEngine==='classic'?'active':''}" id="eng-classic" aria-pressed="${S.voiceEngine==='classic'}">Classic</button>
+              <button class="vs-engine-btn ${S.voiceEngine==='kokoro'?'active':''}" id="eng-kokoro" aria-pressed="${S.voiceEngine==='kokoro'}">AI Neural</button>
             </div>
-          </div>
-
-          <!-- Classic voice select -->
-          <div class="vs ${S.voiceEngine==='kokoro'?'vs-hidden':''}" id="vox-classic-voice-section">
-            <div class="vs-label"><label for="vox-voice-select">Voice</label></div>
-            <select id="vox-voice-select" aria-label="Select system voice"></select>
-          </div>
-
-          <!-- Kokoro section -->
-          <div class="vs ${S.voiceEngine==='classic'?'vs-hidden':''}" id="vox-kokoro-section">
-            <div class="vs-kokoro-info">Kokoro AI · ~80MB download · works offline</div>
-            <div id="vox-dl-wrap" class="${S.kokoroModelCached?'vs-hidden':''}">
-              <button class="vs-kokoro-dl" id="btn-kokoro-dl">⬇ Download AI Voice</button>
-              <div id="vox-dl-bar-wrap" class="vs-hidden" aria-live="polite" aria-label="Download progress">
-                <div id="vox-dl-bar-track" aria-hidden="true"><div id="vox-dl-bar-fill"></div></div>
-                <span id="vox-dl-pct">0%</span>
+            <!-- Classic voice -->
+            <div class="${S.voiceEngine==='kokoro'?'vs-hidden':''}" id="vox-classic-voice-section" style="margin-top:6px">
+              <select id="vox-voice-select" aria-label="Select voice"></select>
+            </div>
+            <!-- Kokoro voice / download -->
+            <div class="${S.voiceEngine==='classic'?'vs-hidden':''}" id="vox-kokoro-section" style="margin-top:6px">
+              <div id="vox-dl-wrap" class="${S.kokoroModelCached?'vs-hidden':''}">
+                <button class="vs-kokoro-dl" id="btn-kokoro-dl">⬇ Download AI Voice (~80MB)</button>
+                <div id="vox-dl-bar-wrap" class="vs-hidden" aria-live="polite">
+                  <div id="vox-dl-bar-track"><div id="vox-dl-bar-fill"></div></div>
+                  <span id="vox-dl-pct">0%</span>
+                </div>
               </div>
-            </div>
-            <div id="vox-kokoro-voice-wrap" class="${S.kokoroModelCached?'':'vs-hidden'}">
-              <div class="vs-label"><label for="vox-kokoro-voice-select">AI Voice</label></div>
-              <select id="vox-kokoro-voice-select" aria-label="Select AI voice">
-                <option value="af_bella">Bella (Female)</option>
-                <option value="af_sarah">Sarah (Female)</option>
-                <option value="af_sky">Sky (Female)</option>
-                <option value="af_nicole">Nicole (Female)</option>
-                <option value="am_adam">Adam (Male)</option>
-                <option value="am_michael">Michael (Male)</option>
-              </select>
-            </div>
-          </div>
-
-          <div class="vs">
-            <div class="vs-label">Highlight</div>
-            <div class="vs-toggle-row">
-              <span class="vs-toggle-label" id="lbl-hl-word">Highlight word</span>
-              <button class="vs-toggle ${S.highlightWord?'on':''}" id="tog-word"
-                role="switch" aria-checked="${S.highlightWord}" aria-labelledby="lbl-hl-word"></button>
-            </div>
-            <div class="vs-toggle-row">
-              <span class="vs-toggle-label" id="lbl-hl-sent">Highlight sentence</span>
-              <button class="vs-toggle ${S.highlightSentence?'on':''}" id="tog-sentence"
-                role="switch" aria-checked="${S.highlightSentence}" aria-labelledby="lbl-hl-sent"></button>
-            </div>
-            <div class="vs-hl-style" role="group" aria-label="Highlight style">
-              <button class="vs-hl-btn ${S.sentenceStyle==='bg'?'active':''}" id="hl-bg"
-                aria-pressed="${S.sentenceStyle==='bg'}">Background</button>
-              <button class="vs-hl-btn ${S.sentenceStyle==='underline'?'active':''}" id="hl-ul"
-                aria-pressed="${S.sentenceStyle==='underline'}">Underline</button>
-            </div>
-            <div class="vs-color-row">
-              <div class="vs-color-item">
-                <label class="vs-color-item-label" for="hex-word">Word color</label>
-                <input class="vs-hex-input" id="hex-word" maxlength="7" value="${S.wordColor}" placeholder="#f59e0b">
-                <div class="vs-hex-preview" id="prev-word" style="background:${S.wordColor}" aria-hidden="true"></div>
-              </div>
-              <div class="vs-color-item">
-                <label class="vs-color-item-label" for="hex-sentence">Sentence color</label>
-                <input class="vs-hex-input" id="hex-sentence" maxlength="7" value="${S.sentenceHex}" placeholder="#f59e0b">
-                <div class="vs-hex-preview" id="prev-sentence" style="background:${S.sentenceHex}" aria-hidden="true"></div>
+              <div id="vox-kokoro-voice-wrap" class="${S.kokoroModelCached?'':'vs-hidden'}">
+                <select id="vox-kokoro-voice-select" aria-label="AI voice">
+                  <option value="af_bella">Bella (F)</option>
+                  <option value="af_sarah">Sarah (F)</option>
+                  <option value="af_sky">Sky (F)</option>
+                  <option value="af_nicole">Nicole (F)</option>
+                  <option value="am_adam">Adam (M)</option>
+                  <option value="am_michael">Michael (M)</option>
+                </select>
               </div>
             </div>
           </div>
 
+          <!-- Highlight toggles + style — compact two-row layout -->
           <div class="vs">
-            <div class="vs-label">Shortcuts (Option/Alt + key)</div>
-            <div class="vs-sc-row">
-              <label for="sc-play">Play/Pause</label>
-              <input class="vs-sc-input" id="sc-play" maxlength="1" aria-label="Play/Pause shortcut key">
-            </div>
-            <div class="vs-sc-row">
-              <label for="sc-stop">Stop</label>
-              <input class="vs-sc-input" id="sc-stop" maxlength="1" aria-label="Stop shortcut key">
-            </div>
-            <div class="vs-sc-row">
-              <label for="sc-read">Read selection</label>
-              <input class="vs-sc-input" id="sc-read" maxlength="1" aria-label="Read selection shortcut key">
-            </div>
-            <button class="vs-save-btn" id="sc-save">Save shortcuts</button>
-          </div>
-
-          <div class="vs">
-            <div class="vs-label">Export</div>
-            <div class="vs-export-row">
-              <button class="vs-export-btn" id="exp-pdf">📄 PDF</button>
-              <button class="vs-export-btn" id="exp-mp3">🎵 Audio</button>
+            <div class="vs-hl-row">
+              <div class="vs-hl-left">
+                <div class="vs-hl-toggle-pair">
+                  <span>Word</span>
+                  <button class="vs-toggle ${S.highlightWord?'on':''}" id="tog-word" role="switch" aria-checked="${S.highlightWord}" aria-label="Highlight word"></button>
+                </div>
+                <div class="vs-hl-toggle-pair">
+                  <span>Sentence</span>
+                  <button class="vs-toggle ${S.highlightSentence?'on':''}" id="tog-sentence" role="switch" aria-checked="${S.highlightSentence}" aria-label="Highlight sentence"></button>
+                </div>
+              </div>
+              <div class="vs-hl-right">
+                <button class="vs-hl-btn ${S.sentenceStyle==='bg'?'active':''}" id="hl-bg" aria-pressed="${S.sentenceStyle==='bg'}">BG</button>
+                <button class="vs-hl-btn ${S.sentenceStyle==='underline'?'active':''}" id="hl-ul" aria-pressed="${S.sentenceStyle==='underline'}">___</button>
+                <input class="vs-hex-mini" id="hex-word" maxlength="7" value="${S.wordColor}" title="Word color" style="border-color:${S.wordColor}">
+                <input class="vs-hex-mini" id="hex-sentence" maxlength="7" value="${S.sentenceHex}" title="Sentence color" style="border-color:${S.sentenceHex}">
+              </div>
             </div>
           </div>
 
-          <div id="vox-status" role="status" aria-live="polite">Ready</div>
+          <!-- Shortcuts — inline 3-key row -->
+          <div class="vs">
+            <div class="vs-sc-inline">
+              <span class="vs-sc-lbl">Alt+</span>
+              <label class="vs-sc-pair"><span>▶</span><input class="vs-sc-input" id="sc-play" maxlength="1"></label>
+              <label class="vs-sc-pair"><span>■</span><input class="vs-sc-input" id="sc-stop" maxlength="1"></label>
+              <label class="vs-sc-pair"><span>sel</span><input class="vs-sc-input" id="sc-read" maxlength="1"></label>
+              <button class="vs-sc-save" id="sc-save">Save</button>
+            </div>
+          </div>
+
+          <!-- Export + status on same row -->
+          <div class="vs vs-bottom-row">
+            <button class="vs-export-btn" id="exp-pdf">PDF</button>
+            <button class="vs-export-btn" id="exp-mp3">Audio</button>
+            <span id="vox-status" role="status" aria-live="polite">Ready</span>
+          </div>
+
         </div>
       </div>`;
 
@@ -1114,21 +1087,20 @@
       applyColors(); savePrefs();
     };
 
-    function bindHex(inputId, previewId, setter) {
+    function bindHex(inputId, setter) {
       const el = document.getElementById(inputId);
-      const pv = document.getElementById(previewId);
       el.oninput = (e) => {
         let val = e.target.value.trim();
         if (!val.startsWith('#')) val = '#' + val;
         if (/^#[0-9a-fA-F]{6}$/.test(val)) {
-          pv.style.background = val;
+          el.style.borderColor = val;
           setter(val);
           applyColors(); savePrefs();
         }
       };
     }
-    bindHex('hex-word','prev-word', v => S.wordColor = v);
-    bindHex('hex-sentence','prev-sentence', v => S.sentenceHex = v);
+    bindHex('hex-word', v => S.wordColor = v);
+    bindHex('hex-sentence', v => S.sentenceHex = v);
 
     document.getElementById('sc-save').onclick = () => {
       S.shortcuts.play = document.getElementById('sc-play').value || 'p';

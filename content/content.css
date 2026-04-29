@@ -141,17 +141,21 @@
   border-radius: 18px;
   overflow: hidden;
   margin-top: 8px;
+  max-height: 72vh;        /* never taller than viewport */
+  display: none;
+  flex-direction: column;
 }
-#vox-settings.open { display: block; }
+#vox-settings.open { display: flex; }
 
-/* Settings header */
+/* Settings header — fixed, doesn't scroll */
 #vox-settings-header {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 14px 16px 10px;
+  padding: 11px 14px 9px;
   border-bottom: 1px solid #1c1c1c;
+  flex-shrink: 0;
 }
 .vox-settings-title {
-  font-size: 11px; font-weight: 600;
+  font-size: 10px; font-weight: 600;
   letter-spacing: 0.1em; text-transform: uppercase; color: #555;
 }
 #vox-settings-close {
@@ -161,16 +165,24 @@
 }
 #vox-settings-close:hover { color: #ccc; background: rgba(255,255,255,0.06); }
 
-/* Settings body */
-#vox-settings-body { padding: 14px 16px 16px; }
+/* Settings body — scrollable */
+#vox-settings-body {
+  padding: 10px 14px 14px;
+  overflow-y: auto;
+  flex: 1;
+  scrollbar-width: thin;
+  scrollbar-color: #252525 transparent;
+}
+#vox-settings-body::-webkit-scrollbar { width: 4px; }
+#vox-settings-body::-webkit-scrollbar-thumb { background: #282828; border-radius: 2px; }
 
 /* Section */
-.vs { margin-bottom: 16px; }
+.vs { margin-bottom: 12px; }
 .vs:last-child { margin-bottom: 0; }
 .vs-label {
   font-size: 9px; font-weight: 700;
-  letter-spacing: 0.12em; text-transform: uppercase;
-  color: #3a3a3a; margin-bottom: 8px;
+  letter-spacing: 0.1em; text-transform: uppercase;
+  color: #3a3a3a; margin-bottom: 6px;
 }
 
 /* Speed row */
@@ -199,89 +211,89 @@
 }
 #vox-voice-select:focus { border-color: #f59e0b; }
 
-/* Toggle row */
-.vs-toggle-row {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 6px 0; border-bottom: 1px solid #181818;
-}
-.vs-toggle-row:last-of-type { border-bottom: none; }
-.vs-toggle-label { font-size: 12px; color: #888; }
+/* Toggle pill (used in highlight row) */
 .vs-toggle {
-  position: relative; width: 38px; height: 22px;
+  position: relative; width: 34px; height: 20px;
   background: #252525; border-radius: 999px;
   cursor: pointer; transition: background 0.2s; border: none; flex-shrink: 0;
 }
 .vs-toggle.on { background: #f59e0b; }
 .vs-toggle::after {
   content: ''; position: absolute;
-  width: 16px; height: 16px; border-radius: 50%;
+  width: 14px; height: 14px; border-radius: 50%;
   background: #fff; top: 3px; left: 3px;
   transition: transform 0.2s;
   box-shadow: 0 1px 4px rgba(0,0,0,0.4);
 }
-.vs-toggle.on::after { transform: translateX(16px); }
+.vs-toggle.on::after { transform: translateX(14px); }
 
-/* Highlight style selector */
-.vs-hl-style {
-  display: flex; gap: 6px; margin-top: 8px;
+/* Highlight row — all controls in one compact band */
+.vs-hl-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+.vs-hl-left {
+  display: flex; flex-direction: column; gap: 5px;
+}
+.vs-hl-toggle-pair {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 11px; color: #777;
+}
+.vs-hl-right {
+  display: flex; align-items: center; gap: 5px;
 }
 .vs-hl-btn {
-  flex: 1; background: #181818; border: 1px solid #252525;
-  color: #777; border-radius: 8px; padding: 6px 8px;
-  font-size: 11px; font-family: inherit; cursor: pointer;
-  transition: all 0.15s; text-align: center;
-}
-.vs-hl-btn.active { background: #1e1e1e; border-color: #f59e0b; color: #f59e0b; }
-
-/* Color hex inputs */
-.vs-color-row { display: flex; gap: 10px; margin-top: 10px; }
-.vs-color-item {
-  flex: 1; display: flex; flex-direction: column; gap: 5px;
-}
-.vs-color-item-label { font-size: 10px; color: #444; }
-.vs-hex-input {
   background: #181818; border: 1px solid #252525;
-  color: #bbb; border-radius: 8px; padding: 6px 10px;
-  font-size: 12px; font-family: monospace; outline: none; width: 100%;
-}
-.vs-hex-input:focus { border-color: #f59e0b; }
-.vs-hex-preview {
-  width: 100%; height: 4px; border-radius: 2px; margin-top: 3px;
-}
-
-/* Shortcut rows */
-.vs-sc-row {
-  display: flex; align-items: center; justify-content: space-between;
-  font-size: 12px; color: #777; padding: 5px 0;
-}
-.vs-sc-input {
-  width: 34px; background: #181818; border: 1px solid #252525;
-  color: #f0f0f0; border-radius: 6px; padding: 4px;
-  text-align: center; font-size: 12px; font-family: monospace; outline: none;
-}
-.vs-sc-input:focus { border-color: #f59e0b; }
-.vs-save-btn {
-  margin-top: 8px; width: 100%; background: #181818;
-  border: 1px solid #252525; color: #777; border-radius: 9px;
-  padding: 7px; font-size: 11px; font-family: inherit; cursor: pointer;
+  color: #777; border-radius: 6px; padding: 4px 7px;
+  font-size: 11px; font-family: inherit; cursor: pointer;
   transition: all 0.15s;
 }
-.vs-save-btn:hover { background: #222; color: #ccc; border-color: #333; }
-
-/* Export */
-.vs-export-row { display: flex; gap: 8px; }
-.vs-export-btn {
-  flex: 1; background: #181818; border: 1px solid #252525;
-  color: #777; border-radius: 9px; padding: 8px;
-  font-size: 11px; font-family: inherit; cursor: pointer;
-  transition: all 0.15s; text-align: center;
+.vs-hl-btn.active { border-color: #f59e0b; color: #f59e0b; }
+/* Mini hex inputs (no label, just colored border as preview) */
+.vs-hex-mini {
+  width: 58px; background: #181818; border: 2px solid #252525;
+  color: #bbb; border-radius: 6px; padding: 4px 5px;
+  font-size: 10px; font-family: monospace; outline: none;
 }
-.vs-export-btn:hover { background: #222; color: #ccc; border-color: #333; }
+.vs-hex-mini:focus { border-color: #f59e0b !important; }
 
-/* Status */
+/* Shortcuts — single inline row */
+.vs-sc-inline {
+  display: flex; align-items: center; gap: 6px;
+}
+.vs-sc-lbl { font-size: 10px; color: #444; white-space: nowrap; }
+.vs-sc-pair {
+  display: flex; align-items: center; gap: 3px;
+  font-size: 10px; color: #555;
+}
+.vs-sc-input {
+  width: 28px; background: #181818; border: 1px solid #252525;
+  color: #f0f0f0; border-radius: 5px; padding: 3px;
+  text-align: center; font-size: 11px; font-family: monospace; outline: none;
+}
+.vs-sc-input:focus { border-color: #f59e0b; }
+.vs-sc-save {
+  margin-left: auto; background: #181818; border: 1px solid #252525;
+  color: #666; border-radius: 6px; padding: 4px 9px;
+  font-size: 10px; font-family: inherit; cursor: pointer;
+  transition: all 0.15s; white-space: nowrap;
+}
+.vs-sc-save:hover { color: #ccc; border-color: #333; }
+
+/* Bottom row: export + status inline */
+.vs-bottom-row {
+  display: flex; align-items: center; gap: 6px;
+}
+.vs-export-btn {
+  background: #181818; border: 1px solid #252525;
+  color: #666; border-radius: 7px; padding: 5px 10px;
+  font-size: 10px; font-family: inherit; cursor: pointer;
+  transition: all 0.15s;
+}
+.vs-export-btn:hover { color: #ccc; border-color: #333; }
 #vox-status {
-  font-size: 10px; color: #383838; text-align: center;
-  padding-top: 10px; letter-spacing: 0.04em;
+  flex: 1; font-size: 10px; color: #383838;
+  text-align: right; letter-spacing: 0.04em; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
 }
 #vox-status.playing { color: #f59e0b; }
 
