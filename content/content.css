@@ -47,6 +47,8 @@
   user-select: none;
   filter: drop-shadow(0 12px 40px rgba(0,0,0,0.7));
   width: 380px;
+  /* Allow settings panel (absolute child) to render outside player bounds */
+  overflow: visible;
 }
 #vox-player.vox-hidden { display: none !important; }
 
@@ -133,17 +135,22 @@
 #vox-close-bar { font-size: 14px; color: #555; }
 #vox-close-bar:hover { color: #ccc; background: rgba(255,255,255,0.06); }
 
-/* ── Settings panel (slides below bar) ── */
+/* ── Settings panel — always opens ABOVE the bar ── */
 #vox-settings {
   display: none;
   background: #111;
   border: 1px solid #252525;
   border-radius: 18px;
   overflow: hidden;
-  margin-top: 8px;
-  max-height: 72vh;        /* never taller than viewport */
-  display: none;
+  /* Absolute so it floats above the player bar regardless of drag position */
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  width: 380px;
+  max-height: 72vh;
   flex-direction: column;
+  /* Clamp to viewport top — if player dragged near top, scroll instead of clip */
+  overflow: hidden;
 }
 #vox-settings.open { display: flex; }
 
