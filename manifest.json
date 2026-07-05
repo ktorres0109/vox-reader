@@ -33,7 +33,8 @@
         "<all_urls>"
       ],
       "js": [
-        "content/content.js"
+        "content/content.js",
+        "content/tts_sync.js"
       ],
       "css": [
         "content/content.css"

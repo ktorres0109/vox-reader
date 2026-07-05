@@ -4,10 +4,17 @@
   if (window.__voxReaderLoaded) return;
   window.__voxReaderLoaded = true;
 
+  // chrome.runtime.sendMessage throws synchronously when extension context is invalidated
+  // (e.g. after extension reload). Wrapping in try-catch prevents uncaught errors and
+  // ensures callers don't abort mid-function when the throw would skip later statements.
+  function sendMsg(msg) {
+    try { chrome.runtime.sendMessage(msg).catch(() => {}); } catch (_) {}
+  }
+
   // Stop TTS on any navigation — refresh, back/forward, or SPA route change
   function stopTTS() {
     if (S.voiceEngine === 'kokoro') {
-      chrome.runtime.sendMessage({ action: 'kokoro_stop' }).catch(() => {});
+      sendMsg({ action: 'kokoro_stop' });
     } else {
       window.speechSynthesis.cancel();
     }
@@ -50,10 +57,8 @@
     overlayRafPending: false,
     // ── AI voice engine ──
     voiceEngine: 'classic',       // 'classic' | 'kokoro'
-    kokoroVoice: 'af_bella',      // Kokoro speaker ID
-    kokoroModelCached: false,     // true once model fully downloaded
-    kokoroLoading: false,         // download in progress
-    _pendingTimings: null,        // timings array waiting for kokoro_chunk
+    kokoroModelCached: false,     // true once model has successfully loaded (persisted to storage.local)
+    kokoroLoading: false,         // model load in progress this session
   };
 
   // ── Prefs ──────────────────────────────────────────────────────────────────
@@ -61,7 +66,7 @@
     chrome.storage.sync.get([
       'speed','voiceName','shortcuts','highlightWord','highlightSentence',
       'sentenceStyle','wordColor','sentenceHex',
-      'voiceEngine','kokoroVoice',
+      'voiceEngine',
     ], (p) => {
       if (p.speed != null) S.speed = p.speed;
       if (p.voiceName) S.selectedVoiceName = p.voiceName;
@@ -72,7 +77,6 @@
       if (p.wordColor) S.wordColor = p.wordColor;
       if (p.sentenceHex) S.sentenceHex = p.sentenceHex;
       if (p.voiceEngine) S.voiceEngine = p.voiceEngine;
-      if (p.kokoroVoice) S.kokoroVoice = p.kokoroVoice;
       cb();
     });
   }
@@ -84,7 +88,7 @@
         highlightWord: S.highlightWord, highlightSentence: S.highlightSentence,
         sentenceStyle: S.sentenceStyle, wordColor: S.wordColor,
         sentenceHex: S.sentenceHex,
-        voiceEngine: S.voiceEngine, kokoroVoice: S.kokoroVoice,
+        voiceEngine: S.voiceEngine,
       });
     } catch(e) { /* extension reloaded mid-session, ignore */ }
   }
@@ -249,7 +253,7 @@
     const proseEls = Array.from(document.querySelectorAll('[class*="prose"]'))
       .filter(el => (el.innerText||'').trim().length > 200);
     if (proseEls.length) {
-      proseEls.sort((a,b) => (a.innerText||'').length - (b.innerText||'').length);
+      proseEls.sort((a,b) => (b.innerText||'').length - (a.innerText||'').length);
       return proseEls[0];
     }
 
@@ -349,6 +353,10 @@
   }
 
   function rewrap(cb) {
+    // Don't rewrap the regular page while immersive mode is active —
+    // immersive mode wraps its own overlay content and rewrapping would
+    // strip those spans and then wrap the wrong root.
+    if (S.immersiveActive) { if (cb) cb(); return; }
     unwrap();
     const root = getRoot();
     wrapWords(root);
@@ -551,25 +559,25 @@
   }
 
   function kokoroSpeakFrom(idx) {
-    chrome.runtime.sendMessage({ action: 'kokoro_stop' }).catch(() => {});
+    sendMsg({ action: 'kokoro_stop' });
     stopTicker(); clearHL();
-    S.currentWord = idx; S.currentSentence = -1;
+    S.currentSentence = -1;
     if (!S.words.length) return;
 
     const sentences = getSentencesFrom(idx);
     if (!sentences.length) return;
 
+    // Snap to sentence start — kokoro synthesizes full sentences, so highlight
+    // should start at the sentence boundary, not the mid-sentence seek point.
+    const startIdx = sentences[0].startWordIdx;
+    S.currentWord = startIdx;
+
     S.speaking = true; S.paused = false;
     document.documentElement.classList.add('vox-reading');
-    highlightAt(idx);
+    highlightAt(startIdx);
     updatePlayBtn(); setStatus('Generating…', true);
 
-    chrome.runtime.sendMessage({
-      action: 'kokoro_speak',
-      sentences,
-      voice: S.kokoroVoice,
-      speed: S.speed,
-    }).catch(() => {});
+    sendMsg({ action: 'kokoro_speak', sentences });
   }
 
   // ── Engine dispatcher ──────────────────────────────────────────────────────
@@ -585,7 +593,7 @@
     } else {
       stopTicker();
       if (S.voiceEngine === 'kokoro') {
-        chrome.runtime.sendMessage({ action: 'kokoro_stop' }).catch(() => {});
+        sendMsg({ action: 'kokoro_stop' });
       } else {
         window.speechSynthesis.pause();
       }
@@ -597,7 +605,7 @@
 
   function stop(reset = false) {
     if (S.voiceEngine === 'kokoro') {
-      chrome.runtime.sendMessage({ action: 'kokoro_stop' }).catch(() => {});
+      sendMsg({ action: 'kokoro_stop' });
     } else {
       window.speechSynthesis.cancel();
     }
@@ -735,26 +743,19 @@
 
   // ── Kokoro UI helpers ──────────────────────────────────────────────────────
   function setKokoroUIState(state) {
-    // state: 'downloading' | 'ready'
-    const dlBar    = document.getElementById('vox-dl-bar-wrap');
+    // state: 'loading' | 'ready' | 'error'
     const voiceSel = document.getElementById('vox-kokoro-voice-select');
-    if (!dlBar) return;
-    if (state === 'downloading') {
-      dlBar.classList.remove('vs-hidden');
-      if (voiceSel) voiceSel.classList.add('vs-hidden');
+    if (!voiceSel) return;
+    if (state === 'loading') {
+      voiceSel.textContent = 'Loading…';
+      voiceSel.classList.remove('vs-hidden');
     } else if (state === 'ready') {
-      dlBar.classList.add('vs-hidden');
-      if (voiceSel) voiceSel.classList.remove('vs-hidden');
+      voiceSel.textContent = 'MMS neural voice (English)';
+      voiceSel.classList.remove('vs-hidden');
+    } else if (state === 'error') {
+      voiceSel.textContent = 'Load failed — retry by switching engines';
+      voiceSel.classList.remove('vs-hidden');
     }
-  }
-
-  function updateDownloadBar(loaded, total) {
-    const fill = document.getElementById('vox-dl-bar-fill');
-    const pct  = document.getElementById('vox-dl-pct');
-    if (!fill || !total) return;
-    const p = Math.round((loaded / total) * 100);
-    fill.style.width = p + '%';
-    if (pct) pct.textContent = p + '%';
   }
 
   function syncEngineUI() {
@@ -769,11 +770,8 @@
     if (engKokoro)  engKokoro.classList.toggle('active', S.voiceEngine === 'kokoro');
 
     if (S.voiceEngine === 'kokoro') {
-      if (S.kokoroModelCached) {
-        setKokoroUIState('ready');
-      } else {
-        setKokoroUIState('downloading');
-      }
+      // S.kokoroLoading reflects in-progress load this session; takes priority over cached flag
+      setKokoroUIState(S.kokoroLoading || !S.kokoroModelCached ? 'downloading' : 'ready');
     }
   }
 
@@ -838,20 +836,9 @@
             <div class="${S.voiceEngine==='kokoro'?'vs-hidden':''}" id="vox-classic-voice-section" style="margin-top:6px">
               <select id="vox-voice-select" aria-label="Select voice"></select>
             </div>
-            <!-- Kokoro voice — auto-loads on switch, no manual download button -->
+            <!-- Kokoro voice — auto-loads on switch, model files bundled locally -->
             <div class="${S.voiceEngine==='classic'?'vs-hidden':''}" id="vox-kokoro-section" style="margin-top:6px">
-              <div id="vox-dl-bar-wrap" class="vs-hidden" aria-live="polite">
-                <div id="vox-dl-bar-track"><div id="vox-dl-bar-fill"></div></div>
-                <span id="vox-dl-pct">0%</span>
-              </div>
-              <select id="vox-kokoro-voice-select" aria-label="AI voice" class="${S.kokoroModelCached?'':'vs-hidden'}">
-                <option value="af_bella">Bella (F)</option>
-                <option value="af_sarah">Sarah (F)</option>
-                <option value="af_sky">Sky (F)</option>
-                <option value="af_nicole">Nicole (F)</option>
-                <option value="am_adam">Adam (M)</option>
-                <option value="am_michael">Michael (M)</option>
-              </select>
+              <span id="vox-kokoro-voice-select" class="vs-label-muted">${S.kokoroModelCached?'MMS neural voice (English)':'Loading…'}</span>
             </div>
           </div>
 
@@ -918,10 +905,17 @@
     document.getElementById('sc-play').value = S.shortcuts.play;
     document.getElementById('sc-stop').value = S.shortcuts.stop;
     document.getElementById('sc-read').value = S.shortcuts.read;
-    // Set saved Kokoro voice in select
-    const kvSel = document.getElementById('vox-kokoro-voice-select');
-    if (kvSel) kvSel.value = S.kokoroVoice;
+    // If engine was already set to kokoro from saved prefs, mark loading before syncEngineUI
+    // so the UI renders in loading state, then kick off the model load.
+    // Offscreen handles already-loaded case with `if (synthesizer) return`.
+    if (S.voiceEngine === 'kokoro' && !S.kokoroLoading) {
+      S.kokoroLoading = true;
+    }
     syncEngineUI();
+    if (S.kokoroLoading && S.voiceEngine === 'kokoro') {
+      setStatus('Loading AI voice…', true);
+      sendMsg({ action: 'kokoro_load' });
+    }
   }
 
   function bindEvents() {
@@ -999,29 +993,24 @@
     document.getElementById('eng-classic').onclick = () => {
       if (S.voiceEngine === 'classic') return;
       stop(false);
-      S.voiceEngine = 'classic'; savePrefs(); syncEngineUI();
+      S.voiceEngine = 'classic'; S.kokoroLoading = false; savePrefs(); syncEngineUI();
       document.getElementById('eng-classic').setAttribute('aria-pressed', 'true');
       document.getElementById('eng-kokoro').setAttribute('aria-pressed', 'false');
     };
     document.getElementById('eng-kokoro').onclick = () => {
       if (S.voiceEngine === 'kokoro') return;
       stop(false);
-      S.voiceEngine = 'kokoro'; savePrefs(); syncEngineUI();
+      S.voiceEngine = 'kokoro';
+      // Set kokoroLoading BEFORE syncEngineUI so UI renders in loading state immediately
+      if (!S.kokoroLoading) S.kokoroLoading = true;
+      savePrefs(); syncEngineUI();
       document.getElementById('eng-classic').setAttribute('aria-pressed', 'false');
       document.getElementById('eng-kokoro').setAttribute('aria-pressed', 'true');
-      // Auto-trigger model load if not already cached/loading
-      if (!S.kokoroModelCached && !S.kokoroLoading) {
-        S.kokoroLoading = true;
-        setStatus('Loading AI voice… (~80MB, one-time)', true);
-        chrome.runtime.sendMessage({ action: 'kokoro_load' }).catch(() => {});
-      }
+      setStatus('Loading AI voice…', true);
+      sendMsg({ action: 'kokoro_load' });
     };
 
-    // Kokoro voice select
-    document.getElementById('vox-kokoro-voice-select').onchange = (e) => {
-      S.kokoroVoice = e.target.value; savePrefs();
-      if (S.speaking) { const i = S.currentWord; stop(false); speakFrom(i); }
-    };
+    // mms-tts-eng is single speaker — no voice select needed
 
     // Progress bar
     const prog = document.getElementById('vox-progress');
@@ -1158,10 +1147,25 @@
 
     // Kokoro responses from offscreen (routed through SW)
     if (msg.action === 'kokoro_chunk') {
-      // A sentence just started playing — reset ticker to this sentence's word range
+      // A sentence just started playing — reset ticker to this sentence's word range.
+      // Use actual audio duration (msg.duration) to pace word timings linearly rather
+      // than BASE_CPS * S.speed, because mms-tts-eng ignores the speed parameter.
       const si = getSentenceIdx(msg.startWordIdx);
-      const endIdx = si >= 0 && S.sentences[si] ? S.sentences[si].end + 1 : undefined;
-      const timings = buildTimings(msg.startWordIdx, endIdx);
+      const sent = si >= 0 ? S.sentences[si] : null;
+      let timings;
+      if (sent && msg.duration) {
+        const words = S.words.slice(sent.start, sent.end + 1);
+        const totalChars = words.reduce((s, w) => s + w.text.length + 1, 0) || 1;
+        let charOffset = 0;
+        timings = words.map((w, i) => {
+          const ms = (charOffset / totalChars) * msg.duration * 1000;
+          charOffset += w.text.length + 1;
+          return { wordIdx: sent.start + i, ms };
+        });
+      } else {
+        const endIdx = sent ? sent.end + 1 : undefined;
+        timings = buildTimings(msg.startWordIdx, endIdx);
+      }
       S.currentWord = msg.startWordIdx;
       startTicker(timings, msg.startedAt);
       setStatus('Playing', true);
@@ -1177,30 +1181,26 @@
       return;
     }
 
-    if (msg.action === 'kokoro_progress') {
-      S.kokoroLoading = true;
-      const pct = msg.total > 0 ? Math.round((msg.loaded / msg.total) * 100) : 0;
-      setStatus(`Downloading AI voice… ${pct}%`, true);
-      if (msg.total > 0) updateDownloadBar(msg.loaded, msg.total);
-      setKokoroUIState('downloading');
-      return;
-    }
-
     if (msg.action === 'kokoro_ready') {
       S.kokoroModelCached = true; S.kokoroLoading = false;
       saveKokoroFlag();
-      setKokoroUIState('ready');
-      setStatus('AI voice ready — press Play', true);
+      if (S.voiceEngine === 'kokoro') {
+        setKokoroUIState('ready');
+        setStatus('AI voice ready — press Play', true);
+      }
       return;
     }
 
     if (msg.action === 'kokoro_error') {
-      S.speaking = false; S.kokoroLoading = false;
-      stopTicker(); clearHL();
-      document.documentElement.classList.remove('vox-reading');
-      updatePlayBtn();
-      setStatus('Error: ' + (msg.error || 'unknown'));
-      setKokoroUIState(S.kokoroModelCached ? 'ready' : 'idle');
+      S.kokoroLoading = false;
+      if (S.voiceEngine === 'kokoro') {
+        S.speaking = false;
+        stopTicker(); clearHL();
+        document.documentElement.classList.remove('vox-reading');
+        updatePlayBtn();
+        setStatus('Error: ' + (msg.error || 'unknown'));
+        setKokoroUIState(S.kokoroModelCached ? 'ready' : 'downloading');
+      }
       return;
     }
   });

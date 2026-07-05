@@ -150,7 +150,6 @@
   max-height: 72vh;
   flex-direction: column;
   /* Clamp to viewport top — if player dragged near top, scroll instead of clip */
-  overflow: hidden;
 }
 #vox-settings.open { display: flex; }
 
@@ -314,6 +313,7 @@
 
 /* ── Utility ── */
 .vs-hidden { display: none !important; }
+.vs-label-muted { font-size: 11px; color: #9ca3af; }
 
 /* ── Voice Engine toggle ── */
 .vs-engine-row {
@@ -340,31 +340,7 @@
 }
 .vs-kokoro-dl:hover { background: #2a2a2a; border-color: #f59e0b66; }
 
-/* Download progress bar */
-#vox-dl-bar-wrap {
-  display: flex; align-items: center; gap: 8px; margin-top: 8px;
-}
-#vox-dl-bar-track {
-  flex: 1; height: 4px; background: #252525; border-radius: 2px; overflow: hidden;
-}
-#vox-dl-bar-fill {
-  height: 100%; background: #f59e0b; border-radius: 2px;
-  width: 0%; transition: width 0.3s;
-}
-#vox-dl-pct {
-  font-size: 10px; color: #f59e0b; min-width: 28px; text-align: right;
-  font-variant-numeric: tabular-nums;
-}
 
-/* Kokoro AI voice select */
-#vox-kokoro-voice-wrap { margin-top: 6px; }
-#vox-kokoro-voice-select {
-  width: 100%; background: #181818; border: 1px solid #252525;
-  color: #bbb; border-radius: 10px; padding: 8px 12px;
-  font-size: 12px; outline: none; cursor: pointer;
-  -webkit-appearance: none; font-family: inherit; margin-top: 4px;
-}
-#vox-kokoro-voice-select:focus { border-color: #f59e0b; }
 
 /* ── Immersive ── */
 #vox-immersive {

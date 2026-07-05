@@ -19,7 +19,7 @@ async function ensureOffscreen() {
     await chrome.offscreen.createDocument({
       url: 'offscreen/offscreen.html',
       reasons: ['AUDIO_PLAYBACK'],
-      justification: 'Kokoro neural TTS synthesis and audio playback',
+      justification: 'Neural TTS synthesis (mms-tts-eng) and audio playback',
     });
   } finally {
     offscreenCreating = false;
@@ -41,22 +41,29 @@ async function sendToOffscreen(msg, maxRetries = 12) {
       await new Promise(r => setTimeout(r, 400));
     }
   }
+  // All retries exhausted — surface the failure so content script can recover
+  if (msg.tabId) {
+    chrome.tabs.sendMessage(msg.tabId, {
+      action: 'kokoro_error',
+      error: 'Offscreen document failed to initialize',
+      tabId: msg.tabId,
+    }).catch(() => {});
+  }
 }
 
 // ── Message routing ─────────────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
-  // Content → offscreen
+  // Content → offscreen (fire-and-forget — callers use .catch(() => {}), no response needed)
   if (msg.action === 'kokoro_load' || msg.action === 'kokoro_speak' || msg.action === 'kokoro_stop') {
     const tabId = sender.tab?.id;
     sendToOffscreen({ ...msg, tabId });
-    sendResponse({ ok: true });
-    return true;
+    return;
   }
 
   // Offscreen → content tab
   if (
-    msg.action === 'kokoro_progress' || msg.action === 'kokoro_ready'  ||
+    msg.action === 'kokoro_ready'  ||
     msg.action === 'kokoro_chunk'    || msg.action === 'kokoro_end'    ||
     msg.action === 'kokoro_error'
   ) {

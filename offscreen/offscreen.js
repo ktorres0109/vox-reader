@@ -1,15 +1,27 @@
-// Vox Reader — Kokoro TTS Offscreen Document
+// Vox Reader — Neural TTS Offscreen Document (Xenova/mms-tts-eng)
 // Handles neural speech synthesis + audio playback.
 // Runs in a dedicated offscreen page so WASM/AudioContext don't block the extension.
 
 import { pipeline, env } from '../vendor/transformers.min.js';
 
-// transformers.js v3 auto-configures wasmPaths to its own CDN and sets numThreads=1
-// when crossOriginIsolated is false (which it is in offscreen docs without COOP headers).
-// Do NOT override wasmPaths — transformers.js already picks the correct version.
-
 // Suppress verbose logging
-env.logging = false;
+env.logLevel = 'error';
+
+// Point ORT-Web at locally bundled WASM files — no CDN hit at runtime.
+// Use string (directory) form: ORT appends filenames to construct full URLs.
+// Object form with { mjs, wasm } keys is NOT recognized by ORT and silently falls
+// back to the CDN URL baked into transformers.min.js, causing "Failed to fetch".
+// numThreads=1: offscreen documents lack COOP/COEP headers required for
+// SharedArrayBuffer, so multi-threaded WASM fails; single-threaded always works.
+env.backends.onnx.wasm.wasmPaths = chrome.runtime.getURL('vendor/');
+
+// Redirect model fetches to locally bundled files — no CDN hit at runtime.
+// Run tools/fetch-deps.sh once to populate vendor/models/.
+// Note: allowRemoteModels stays true (browser build always uses fetch());
+//       overriding remoteHost/remotePathTemplate points it at chrome-extension:// URLs.
+env.remoteHost = chrome.runtime.getURL('vendor/models/');
+env.remotePathTemplate = '{model}/';
+env.useBrowserCache = false;
 
 // ── State ──────────────────────────────────────────────────────────────────
 let synthesizer = null;
@@ -17,25 +29,38 @@ let audioCtx = null;
 let currentSource = null;
 let isPlaying = false;
 let pendingTabId = null;
+let generation = 0; // incremented on every new kokoro_speak; loops check their gen to exit cleanly
 
 // ── Model loading ──────────────────────────────────────────────────────────
-async function loadModel(onProgress) {
+let modelLoadingPromise = null;
+
+async function loadModel() {
   if (synthesizer) return;
-  synthesizer = await pipeline(
+  // Guard concurrent calls — multiple kokoro_load messages (SW retries) must not
+  // each kick off their own pipeline() call; they should all wait on the same one.
+  if (modelLoadingPromise) return modelLoadingPromise;
+  modelLoadingPromise = pipeline(
     'text-to-speech',
-    'onnx-community/Kokoro-82M-v1.0',
-    {
-      dtype: 'q8',                    // quantized — ~83MB vs ~330MB fp32
-      device: 'wasm',
-      progress_callback: onProgress,
-    }
-  );
+    'Xenova/mms-tts-eng',
+    { dtype: 'q8' }
+  ).then(p => {
+    synthesizer = p;
+    modelLoadingPromise = null;
+  }).catch(err => {
+    modelLoadingPromise = null;
+    throw err;
+  });
+  return modelLoadingPromise;
 }
 
 // ── Audio playback ─────────────────────────────────────────────────────────
 function getAudioCtx() {
   if (!audioCtx || audioCtx.state === 'closed') {
-    audioCtx = new AudioContext({ sampleRate: 24000 });
+    audioCtx = new AudioContext({ sampleRate: 16000 });
+  }
+  // Browser may suspend AudioContext for power management — resume before use
+  if (audioCtx.state === 'suspended') {
+    audioCtx.resume().catch(() => {});
   }
   return audioCtx;
 }
@@ -49,19 +74,16 @@ function stopCurrentAudio() {
 
 // Synthesize one chunk of text and play it via AudioContext.
 // Returns { startedAt, duration } so content script can start its timing ticker.
-async function synthesizeAndPlay(text, voice, speed) {
+async function synthesizeAndPlay(text) {
   if (!synthesizer) throw new Error('Model not loaded');
   const ctx = getAudioCtx();
   stopCurrentAudio();
 
-  // Kokoro pipeline — voice param is the speaker ID string (e.g. 'af_bella')
-  const out = await synthesizer(text, {
-    voice: voice || 'af_bella',
-    speed: speed || 1.0,
-  });
+  // mms-tts-eng — single speaker, no voice/speed params
+  const out = await synthesizer(text);
 
-  const samples = out.audio;                    // Float32Array, 24kHz mono
-  const sr = out.sampling_rate || 24000;
+  const samples = out.audio;                    // Float32Array, 16000Hz mono
+  const sr = out.sampling_rate || 16000;
   const buf = ctx.createBuffer(1, samples.length, sr);
   buf.getChannelData(0).set(samples);
 
@@ -78,22 +100,24 @@ async function synthesizeAndPlay(text, voice, speed) {
 
 // ── Sentence-streaming synthesis loop ──────────────────────────────────────
 // Synthesizes sentences one at a time, plays each immediately when ready.
-// Pipelines: while sentence N plays, sentence N+1 is being synthesized.
-async function runSentenceLoop(sentences, voice, speed, tabId) {
+// gen: snapshot of `generation` at call time. A new kokoro_speak increments
+// `generation`, so any in-flight loop sees gen !== generation and exits —
+// even if it's blocked inside `await synthesizer(text)` when the cancel arrives.
+async function runSentenceLoop(sentences, tabId, gen) {
   isPlaying = true;
 
   for (let i = 0; i < sentences.length; i++) {
-    if (!isPlaying) break;
+    if (!isPlaying || generation !== gen) break;
 
     const sentence = sentences[i];
 
     try {
-      const { startedAt, duration } = await synthesizeAndPlay(sentence.text, voice, speed);
-      if (!isPlaying) break;
+      const { startedAt, duration } = await synthesizeAndPlay(sentence.text);
+      if (!isPlaying || generation !== gen) break;
 
       // Tell content script which sentence just started and when,
       // so it can resume the word-highlight ticker from the right word.
-      send({ action: 'kokoro_chunk', startWordIdx: sentence.startWordIdx, startedAt, tabId });
+      send({ action: 'kokoro_chunk', startWordIdx: sentence.startWordIdx, startedAt, duration, tabId });
 
       // Wait for audio to finish before playing next sentence
       await new Promise((resolve, reject) => {
@@ -104,18 +128,20 @@ async function runSentenceLoop(sentences, voice, speed, tabId) {
       });
 
     } catch (err) {
-      if (!isPlaying) break;
+      if (!isPlaying || generation !== gen) break;
       send({ action: 'kokoro_error', error: err.message, tabId });
       isPlaying = false;
       return;
     }
   }
 
-  if (isPlaying) {
+  if (isPlaying && generation === gen) {
     send({ action: 'kokoro_end', tabId });
   }
-  isPlaying = false;
-  currentSource = null;
+  if (generation === gen) {
+    isPlaying = false;
+    currentSource = null;
+  }
 }
 
 // ── Message helper ─────────────────────────────────────────────────────────
@@ -132,29 +158,22 @@ chrome.runtime.onMessage.addListener((msg) => {
   if (msg.target !== 'offscreen') return;
 
   if (msg.action === 'kokoro_load') {
-    pendingTabId = msg.tabId;
-    loadModel((progress) => {
-      send({
-        action: 'kokoro_progress',
-        status: progress.status,
-        file: progress.file || '',
-        loaded: progress.loaded || 0,
-        total: progress.total || 0,
-        tabId: pendingTabId,
-      });
-    })
-    .then(() => send({ action: 'kokoro_ready', tabId: pendingTabId }))
-    .catch(err => send({ action: 'kokoro_error', error: err.message, tabId: pendingTabId }));
+    const tabId = msg.tabId;  // capture now — pendingTabId may be overwritten before promise resolves
+    pendingTabId = tabId;
+    loadModel()
+      .then(() => send({ action: 'kokoro_ready', tabId }))
+      .catch(err => send({ action: 'kokoro_error', error: err.message, tabId }));
     return;
   }
 
   if (msg.action === 'kokoro_speak') {
     pendingTabId = msg.tabId;
-    isPlaying = false; // cancel any in-progress loop
+    isPlaying = false;
     stopCurrentAudio();
-    // Small delay to let previous loop detect isPlaying = false
+    const thisGen = ++generation;
+    // Small delay lets any in-progress synthesizer() call finish and see the stale gen
     setTimeout(() => {
-      runSentenceLoop(msg.sentences, msg.voice, msg.speed, msg.tabId);
+      runSentenceLoop(msg.sentences, msg.tabId, thisGen);
     }, 30);
     return;
   }
