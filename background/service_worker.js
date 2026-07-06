@@ -57,6 +57,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // Content → offscreen (fire-and-forget — callers use .catch(() => {}), no response needed)
   if (msg.action === 'kokoro_load' || msg.action === 'kokoro_speak' || msg.action === 'kokoro_stop') {
     const tabId = sender.tab?.id;
+    if (msg.action === 'kokoro_stop') {
+      // every page unload fires a stop; don't CREATE the offscreen document
+      // just to tell it to stop — only route if it already exists
+      chrome.offscreen.hasDocument()
+        .then(ex => { if (ex) sendToOffscreen({ ...msg, tabId }); })
+        .catch(() => {});
+      return;
+    }
     sendToOffscreen({ ...msg, tabId });
     return;
   }

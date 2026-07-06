@@ -106,6 +106,22 @@ async function synthesizeAndPlay(text) {
 async function runSentenceLoop(sentences, tabId, gen) {
   isPlaying = true;
 
+  // Speak may arrive before (or instead of) an explicit kokoro_load — e.g.
+  // the SW was restarted and the cached-flag UI skipped the load step. Load
+  // on demand rather than dying with "Model not loaded".
+  if (!synthesizer) {
+    try {
+      await loadModel();
+    } catch (err) {
+      if (generation === gen) {
+        send({ action: 'kokoro_error', error: err.message, tabId });
+        isPlaying = false;
+      }
+      return;
+    }
+    if (!isPlaying || generation !== gen) return;
+  }
+
   for (let i = 0; i < sentences.length; i++) {
     if (!isPlaying || generation !== gen) break;
 

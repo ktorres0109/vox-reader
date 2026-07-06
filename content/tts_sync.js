@@ -60,6 +60,10 @@
     }
     marked = [];
     pageMap = null; // unwrapping changed the text nodes; rebuild next time
+    // forget the dedupe key too — otherwise pause/resume (or a seq bump) on
+    // the same sentence early-returns in highlight() and never repaints
+    lastSentence = "";
+    lastSpan = "";
   }
 
   function locate(offset) {
@@ -120,8 +124,11 @@
     if (at < 0) return; // sentence not on this page — stay quiet
     const sentSpan = markRange(at, at + needle.length, "ttsr-sent");
     if (state.span) {
-      // word offsets are within the raw sentence; normalized ≈ raw here
-      const w0 = norm(state.sentence.slice(0, state.span[0])).length;
+      // word offsets are within the raw sentence; normalized ≈ raw here.
+      // norm() trims the prefix's trailing space, so add the separator back
+      // or every word mark starts one char early and clips its last letter
+      const prefix = norm(state.sentence.slice(0, state.span[0]));
+      const w0 = prefix.length + (prefix ? 1 : 0);
       const w1 = w0 + Math.max(
         1, norm(state.sentence.slice(state.span[0], state.span[1])).length);
       pageMap = null; buildPageMap(); // sentence wrap changed node layout
