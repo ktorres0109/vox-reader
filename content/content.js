@@ -42,6 +42,8 @@
   window.addEventListener('popstate', () => handleNavigation());
 
   // ── State ──────────────────────────────────────────────────────────────────
+  const DEFAULT_KOKORO_VOICE = 'af_bella';
+
   const S = {
     words: [], sentences: [],
     speaking: false, paused: false,
@@ -61,13 +63,13 @@
     voiceEngine: 'kokoro',        // default — AI Neural with Bella; classic available in Settings
     kokoroModelCached: false,     // true once model has successfully loaded (persisted to storage.local)
     kokoroLoading: false,         // model load in progress this session
-    kokoroVoice: 'af_bella',      // Kokoro voice id (af_bella, af_sarah, …)
+    kokoroVoice: DEFAULT_KOKORO_VOICE,
     kokoroDownloadPct: 0,
     chatDomDirty: false,          // chat DOM changed since last wrap
   };
 
   const KOKORO_VOICES = [
-    { id: 'af_bella',   label: 'Bella (Female)' },
+    { id: 'af_bella',   label: 'Bella (Female) — default' },
     { id: 'af_sarah',   label: 'Sarah (Female)' },
     { id: 'af_sky',     label: 'Sky (Female)' },
     { id: 'af_nicole',  label: 'Nicole (Female)' },
@@ -92,7 +94,8 @@
       if (p.wordColor) S.wordColor = p.wordColor;
       if (p.sentenceHex) S.sentenceHex = p.sentenceHex;
       if (p.voiceEngine) S.voiceEngine = p.voiceEngine;
-      if (p.kokoroVoice) S.kokoroVoice = p.kokoroVoice;
+      const knownVoice = KOKORO_VOICES.some(v => v.id === p.kokoroVoice);
+      S.kokoroVoice = knownVoice ? p.kokoroVoice : DEFAULT_KOKORO_VOICE;
       cb();
     });
   }
@@ -1112,7 +1115,7 @@
             <!-- Kokoro voice — model downloads on first enable -->
             <div class="${S.voiceEngine==='classic'?'vs-hidden':''}" id="vox-kokoro-section" style="margin-top:6px">
               <select id="vox-kokoro-voice-select" aria-label="Kokoro voice"></select>
-              <p class="vs-kokoro-info">Kokoro 82M neural voices — one-time download required</p>
+              <p class="vs-kokoro-info">Default voice: Bella · one-time ~86MB download</p>
             </div>
           </div>
 

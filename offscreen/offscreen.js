@@ -11,7 +11,7 @@ let currentSource = null;
 let isPlaying = false;
 let generation = 0;
 let modelLoadingPromise = null;
-let currentVoice = 'af_bella';
+let currentVoice = 'af_bella'; // Bella — default Kokoro voice
 
 function send(msg) {
   chrome.runtime.sendMessage(msg).catch(() => {});

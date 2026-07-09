@@ -1,7 +1,13 @@
 // Vox Reader — background service worker
 
-chrome.runtime.onInstalled.addListener(() => {
+chrome.runtime.onInstalled.addListener((details) => {
   chrome.storage.sync.remove(['currentWord', 'playerX', 'playerY']);
+  if (details.reason === 'install') {
+    chrome.storage.sync.set({
+      voiceEngine: 'kokoro',
+      kokoroVoice: 'af_bella',
+    });
+  }
 });
 
 // ── Offscreen document management ──────────────────────────────────────────
