@@ -417,12 +417,29 @@
     await sleep(80);
   }
 
+  async function confirmFullThreadLoad() {
+    try {
+      if (sessionStorage.getItem('vox-skip-full-thread') === '1') return false;
+    } catch (_) { /* private mode */ }
+    const roots = getChatRoots();
+    const container = getChatScrollContainer();
+    if (!container || container.scrollHeight <= container.clientHeight + 80) return true;
+    if (roots.length < 4) return true;
+    const load = window.confirm(
+      'Load the full conversation for reading?\n\nThis scrolls through chat history to load older messages.'
+    );
+    if (!load) {
+      try { sessionStorage.setItem('vox-skip-full-thread', '1'); } catch (_) {}
+    }
+    return load;
+  }
+
   async function prepareAndRewrap(cb, opts = {}) {
     const chatRoots = getChatRoots();
     const needsFullHistory = opts.forceFullHistory || (
       chatRoots.length && !chatRoots.some(r => r.querySelector('.vox-word'))
     );
-    if (needsFullHistory) {
+    if (needsFullHistory && await confirmFullThreadLoad()) {
       setStatus('Loading conversation…', true);
       await loadVirtualizedChatHistory();
     }
@@ -945,9 +962,11 @@
     for (let si = startSi; si < S.sentences.length; si++) {
       const { start, end } = S.sentences[si];
       if (start > cap) break;
+      const wordStart = si === startSi ? Math.max(start, startIdx) : start;
       const wordEnd = Math.min(end, cap);
-      const text = S.words.slice(start, wordEnd + 1).map(w => w.text).join(' ');
-      if (text.trim()) result.push({ text, startWordIdx: start });
+      if (wordStart > wordEnd) continue;
+      const text = S.words.slice(wordStart, wordEnd + 1).map(w => w.text).join(' ');
+      if (text.trim()) result.push({ text, startWordIdx: wordStart });
     }
     return result;
   }
@@ -966,14 +985,11 @@
     const sentences = getSentencesFrom(idx, S.speakEndIdx);
     if (!sentences.length) return;
 
-    // Snap to sentence start — kokoro synthesizes full sentences, so highlight
-    // should start at the sentence boundary, not the mid-sentence seek point.
-    const startIdx = sentences[0].startWordIdx;
-    S.currentWord = startIdx;
+    S.currentWord = idx;
 
     S.speaking = true; S.paused = false;
     document.documentElement.classList.add('vox-reading');
-    highlightAt(startIdx);
+    highlightAt(idx);
     updatePlayBtn(); setStatus('Generating…', true);
 
     sendMsg({ action: 'kokoro_speak', sentences, speed: S.speed, voice: S.kokoroVoice });
@@ -1048,15 +1064,24 @@
     const parts = text.trim().split(/\s+/).filter(Boolean);
     if (!parts.length) return -1;
     const norm = (s) => s.replace(/\W/g, '').toLowerCase();
-    const first = norm(parts[0]);
-    for (let i = startNear; i < S.words.length; i++) {
-      if (norm(S.words[i].text) !== first) continue;
-      let ok = true;
-      for (let j = 1; j < parts.length && i + j < S.words.length; j++) {
-        if (norm(S.words[i + j].text) !== norm(parts[j])) { ok = false; break; }
+    const maxLen = Math.min(parts.length, 8);
+    const anchorParts = parts.slice(0, maxLen);
+
+    function matchesAt(i) {
+      if (i + anchorParts.length > S.words.length) return false;
+      for (let j = 0; j < anchorParts.length; j++) {
+        if (norm(S.words[i + j].text) !== norm(anchorParts[j])) return false;
       }
-      if (ok) return i;
+      return true;
     }
+
+    for (let i = startNear; i < S.words.length; i++) {
+      if (matchesAt(i)) return i;
+    }
+    for (let i = 0; i < startNear; i++) {
+      if (matchesAt(i)) return i;
+    }
+    const first = norm(parts[0]);
     return S.words.findIndex(w => norm(w.text) === first);
   }
 

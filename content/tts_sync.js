@@ -11,7 +11,8 @@
 (() => {
   const ENDPOINT = "http://127.0.0.1:8766/state";
   const POLL_ACTIVE_MS = 200;
-  const POLL_IDLE_MS = 2000;
+  const PROBE_INTERVAL_MS = 30000;
+  const PROBE_TIMEOUT_MS = 1500;
 
   const style = document.createElement("style");
   style.textContent = `
@@ -28,6 +29,8 @@
   let lastSentence = "";
   let lastSpan = "";
   let marked = [];         // wrapped <span>s to unwrap on change
+  let appAvailable = false;
+  let timer = null;
 
   function buildPageMap() {
     const walker = document.createTreeWalker(
@@ -59,15 +62,12 @@
       parent.normalize();
     }
     marked = [];
-    pageMap = null; // unwrapping changed the text nodes; rebuild next time
-    // forget the dedupe key too — otherwise pause/resume (or a seq bump) on
-    // the same sentence early-returns in highlight() and never repaints
+    pageMap = null;
     lastSentence = "";
     lastSpan = "";
   }
 
   function locate(offset) {
-    // normalized page offset -> {node, approximate char offset in node}
     const nodes = pageMap.nodes;
     let lo = 0, hi = nodes.length - 1, best = 0;
     while (lo <= hi) {
@@ -76,11 +76,8 @@
       else hi = mid - 1;
     }
     const entry = nodes[best];
-    // map normalized offset back into the raw node text (whitespace runs
-    // collapse to one char in the map, so walk the raw string in step)
     const raw = entry.node.textContent;
     let normPos = entry.start, rawPos = 0, inWs = true;
-    // skip leading whitespace of the node (norm() trimmed it)
     while (rawPos < raw.length && /\s/.test(raw[rawPos])) rawPos++;
     inWs = false;
     while (rawPos < raw.length && normPos < offset) {
@@ -104,8 +101,6 @@
       marked.push(span);
       return span;
     } catch (e) {
-      // range crosses element boundaries surroundContents can't wrap —
-      // fall back to highlighting each intersected text node fully
       return null;
     }
   }
@@ -119,19 +114,16 @@
     if (!state.sentence) return;
     if (!pageMap) buildPageMap();
     const needle = norm(state.sentence);
-    if (needle.length < 8) return; // too short to anchor reliably
+    if (needle.length < 8) return;
     const at = pageMap.text.indexOf(needle);
-    if (at < 0) return; // sentence not on this page — stay quiet
+    if (at < 0) return;
     const sentSpan = markRange(at, at + needle.length, "ttsr-sent");
     if (state.span) {
-      // word offsets are within the raw sentence; normalized ≈ raw here.
-      // norm() trims the prefix's trailing space, so add the separator back
-      // or every word mark starts one char early and clips its last letter
       const prefix = norm(state.sentence.slice(0, state.span[0]));
       const w0 = prefix.length + (prefix ? 1 : 0);
       const w1 = w0 + Math.max(
         1, norm(state.sentence.slice(state.span[0], state.span[1])).length);
-      pageMap = null; buildPageMap(); // sentence wrap changed node layout
+      pageMap = null; buildPageMap();
       const at2 = pageMap.text.indexOf(needle);
       if (at2 >= 0) markRange(at2 + w0, at2 + w1, "ttsr-word");
     }
@@ -139,19 +131,57 @@
     if (target) target.scrollIntoView({ block: "center", behavior: "smooth" });
   }
 
-  let timer = null;
+  async function probeApp() {
+    try {
+      const ctrl = new AbortController();
+      const timeout = setTimeout(() => ctrl.abort(), PROBE_TIMEOUT_MS);
+      const r = await fetch(ENDPOINT, { cache: "no-store", signal: ctrl.signal });
+      clearTimeout(timeout);
+      await r.json();
+      appAvailable = true;
+      return true;
+    } catch (_) {
+      appAvailable = false;
+      return false;
+    }
+  }
+
+  function scheduleProbe() {
+    if (timer) return;
+    timer = setTimeout(async () => {
+      timer = null;
+      if (await probeApp()) poll();
+      else scheduleProbe();
+    }, PROBE_INTERVAL_MS);
+  }
+
   async function poll() {
-    let delay = POLL_IDLE_MS;
+    let delay = POLL_ACTIVE_MS;
     try {
       const r = await fetch(ENDPOINT, { cache: "no-store" });
       const s = await r.json();
+      appAvailable = true;
       if (s.seq !== lastSeq) { lastSeq = s.seq; clearMarks(); }
       if (s.active) { delay = POLL_ACTIVE_MS; highlight(s); }
       else if (marked.length) clearMarks();
     } catch (_) {
-      if (marked.length) clearMarks(); // app closed; clean the page
+      appAvailable = false;
+      if (marked.length) clearMarks();
+      scheduleProbe();
+      return;
     }
     timer = setTimeout(poll, delay);
   }
-  poll();
+
+  async function start() {
+    if (await probeApp()) poll();
+    else scheduleProbe();
+  }
+
+  start();
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible" || appAvailable || timer) return;
+    probeApp().then((ok) => { if (ok && !timer) poll(); });
+  });
 })();
