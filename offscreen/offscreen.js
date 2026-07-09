@@ -2,6 +2,7 @@
 // Uses kokoro-js for multi-voice synthesis (Bella, Sarah, etc.)
 
 import { KokoroTTS } from '../vendor/kokoro.web.js';
+import { encodeWav, wavToBase64 } from './wav.js';
 
 const MODEL_ID = 'onnx-community/Kokoro-82M-v1.0-ONNX';
 
@@ -10,6 +11,7 @@ let audioCtx = null;
 let currentSource = null;
 let isPlaying = false;
 let generation = 0;
+let exportGeneration = 0;
 let modelLoadingPromise = null;
 let currentVoice = 'af_bella'; // Bella — default Kokoro voice
 
@@ -165,6 +167,56 @@ async function runSentenceLoop(sentences, tabId, gen, speed = 1.0, voice) {
   }
 }
 
+async function exportWav(sentences, tabId, speed, voice, exportGen) {
+  if (!tts) {
+    await loadModel(tabId, voice);
+  }
+  if (exportGen !== exportGeneration) return;
+
+  const sr = 24000;
+  const chunks = [];
+  let totalLen = 0;
+
+  for (let i = 0; i < sentences.length; i++) {
+    if (exportGen !== exportGeneration) {
+      send({ action: 'kokoro_export_error', tabId, error: 'Export cancelled' });
+      return;
+    }
+
+    send({
+      action: 'kokoro_export_progress',
+      tabId,
+      pct: sentences.length ? Math.round((i / sentences.length) * 100) : 0,
+    });
+
+    const audio = await tts.generate(sentences[i].text, {
+      voice: voice || currentVoice,
+      speed: Math.max(0.5, Math.min(3.0, speed || 1)),
+    });
+    if (exportGen !== exportGeneration) {
+      send({ action: 'kokoro_export_error', tabId, error: 'Export cancelled' });
+      return;
+    }
+
+    chunks.push(audio.data);
+    totalLen += audio.data.length;
+  }
+
+  const merged = new Float32Array(totalLen);
+  let pos = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, pos);
+    pos += chunk.length;
+  }
+
+  const wav = encodeWav(merged, sr);
+  send({
+    action: 'kokoro_export_ready',
+    tabId,
+    wavBase64: wavToBase64(wav),
+  });
+}
+
 chrome.runtime.sendMessage({ action: 'offscreen_ready' }).catch(() => {});
 
 chrome.runtime.onMessage.addListener((msg) => {
@@ -200,6 +252,19 @@ chrome.runtime.onMessage.addListener((msg) => {
     isPlaying = false;
     generation++;
     stopCurrentAudio();
+    return;
+  }
+
+  if (msg.action === 'kokoro_export_cancel') {
+    exportGeneration++;
+    return;
+  }
+
+  if (msg.action === 'kokoro_export') {
+    const exportGen = ++exportGeneration;
+    if (msg.voice) currentVoice = msg.voice;
+    exportWav(msg.sentences, msg.tabId, msg.speed || 1.0, msg.voice, exportGen)
+      .catch((err) => send({ action: 'kokoro_export_error', error: err.message, tabId: msg.tabId }));
     return;
   }
 });

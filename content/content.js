@@ -66,6 +66,7 @@
     kokoroLoading: false,         // model load in progress this session
     kokoroVoice: DEFAULT_KOKORO_VOICE,
     kokoroDownloadPct: 0,
+    exporting: false,
     chatDomDirty: false,          // chat DOM changed since last wrap
     speakEndIdx: null,            // when set, stop reading at this word index
     _voxDomUpdate: false,         // true while wrap/unwrap mutates the page
@@ -79,6 +80,10 @@
     { id: 'af_heart',   label: 'Heart (Female)' },
     { id: 'am_adam',    label: 'Adam (Male)' },
     { id: 'am_michael', label: 'Michael (Male)' },
+    { id: 'bf_emma',    label: 'Emma (British Female)' },
+    { id: 'bf_isabella', label: 'Isabella (British Female)' },
+    { id: 'bm_george',  label: 'George (British Male)' },
+    { id: 'bm_lewis',   label: 'Lewis (British Male)' },
   ];
 
   // ── Prefs ──────────────────────────────────────────────────────────────────
@@ -1021,6 +1026,11 @@
   }
 
   function stop(reset = false) {
+    if (S.exporting) {
+      sendMsg({ action: 'kokoro_export_cancel' });
+      S.exporting = false;
+      syncExportUI();
+    }
     if (S.voiceEngine === 'kokoro') {
       sendMsg({ action: 'kokoro_stop' });
     } else {
@@ -1186,11 +1196,11 @@
 
     document.getElementById('vox-imm-prev').onclick = () => {
       const si = Math.max(0, S.currentSentence - 1);
-      if (S.sentences[si]) speakFrom(S.sentences[si].start);
+      if (S.sentences[si]) speakFrom(S.sentences[si].start, S.speakEndIdx);
     };
     document.getElementById('vox-imm-next').onclick = () => {
       const si = Math.min(S.sentences.length - 1, S.currentSentence + 1);
-      if (S.sentences[si]) speakFrom(S.sentences[si].start);
+      if (S.sentences[si]) speakFrom(S.sentences[si].start, S.speakEndIdx);
     };
 
     const btn = document.getElementById('vox-immersive-btn');
@@ -1209,11 +1219,58 @@
   }
 
   // ── Audio export ───────────────────────────────────────────────────────────
+  const MAX_EXPORT_WORDS = 2500;
+
+  function downloadWavBase64(wavBase64, filename = 'vox-reader-export.wav') {
+    const bin = atob(wavBase64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const blob = new Blob([bytes], { type: 'audio/wav' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   function exportAudio() {
     const doExport = () => {
+      const startIdx = 0;
+      let endIdx = S.speakEndIdx != null ? S.speakEndIdx : S.words.length - 1;
+      if (endIdx < startIdx) {
+        setStatus('Nothing to export');
+        return;
+      }
+      if (endIdx - startIdx + 1 > MAX_EXPORT_WORDS) {
+        endIdx = startIdx + MAX_EXPORT_WORDS - 1;
+        setStatus(`Export capped at ${MAX_EXPORT_WORDS} words`, true);
+      }
+
+      if (S.voiceEngine === 'kokoro') {
+        if (!S.kokoroModelCached) {
+          setStatus('AI voice must finish downloading first', true);
+          return;
+        }
+        if (S.exporting) return;
+        if (S.speaking || S.paused) stop(false);
+        const sentences = getSentencesFrom(startIdx, endIdx);
+        if (!sentences.length) {
+          setStatus('Nothing to export');
+          return;
+        }
+        S.exporting = true;
+        setStatus('Generating WAV… 0%', true);
+        sendMsg({ action: 'kokoro_export', sentences, speed: S.speed, voice: S.kokoroVoice });
+        return;
+      }
+
+      const text = S.words.slice(startIdx, endIdx + 1).map(w => w.text).join(' ');
+      if (!text) {
+        setStatus('Nothing to export');
+        return;
+      }
       setStatus('Previewing speech (classic voice)…', true);
-      const text = S.words.map(w => w.text).join(' ');
-      if (!text) return;
       const u = new SpeechSynthesisUtterance(text);
       u.rate = S.speed; if (S.voice) u.voice = S.voice;
       u.onend = () => setStatus('Preview done');
@@ -1221,6 +1278,22 @@
     };
     if (!S.words.length) { rewrap(doExport); return; }
     doExport();
+  }
+
+  function syncExportUI() {
+    const btn = document.getElementById('exp-mp3');
+    if (!btn) return;
+    if (S.voiceEngine === 'kokoro') {
+      btn.textContent = 'Export';
+      btn.title = S.kokoroModelCached
+        ? 'Download WAV file (Kokoro voice)'
+        : 'AI voice must finish downloading first';
+      btn.disabled = !S.kokoroModelCached || S.exporting;
+    } else {
+      btn.textContent = 'Preview';
+      btn.title = 'Preview with classic voice (not a file download)';
+      btn.disabled = false;
+    }
   }
 
   // ── Kokoro UI helpers ──────────────────────────────────────────────────────
@@ -1245,6 +1318,7 @@
       playBtn.disabled = blocked;
       playBtn.title = blocked ? 'AI voice must finish downloading first' : '';
     }
+    syncExportUI();
   }
 
   function updateKokoroInstallProgress(pct, file, status) {
@@ -1304,13 +1378,14 @@
       // S.kokoroLoading reflects in-progress load this session; takes priority over cached flag
       setKokoroUIState(S.kokoroLoading || !S.kokoroModelCached ? 'loading' : 'ready');
     }
+    syncExportUI();
   }
 
   // ── Player ─────────────────────────────────────────────────────────────────
   function createPlayer() {
     if (document.getElementById('vox-player')) {
       document.getElementById('vox-player').classList.remove('vox-hidden');
-      populateVoices(); populateKokoroVoices(); syncEngineUI(); syncInstallUI(); return;
+      populateVoices(); populateKokoroVoices(); syncEngineUI(); syncInstallUI(); syncExportUI(); return;
     }
 
     const p = document.createElement('div');
@@ -1416,7 +1491,7 @@
           <!-- Export + status on same row -->
           <div class="vs vs-bottom-row">
             <button class="vs-export-btn" id="exp-pdf" title="Print this page">Print</button>
-            <button class="vs-export-btn" id="exp-mp3" title="Preview with classic voice (not a file download)">Preview</button>
+            <button class="vs-export-btn" id="exp-mp3" title="Download WAV (Kokoro) or preview (classic)">Export</button>
             <span id="vox-status" role="status" aria-live="polite">Ready</span>
           </div>
 
@@ -1760,6 +1835,30 @@
       if (S.voiceEngine === 'kokoro') {
         updateKokoroInstallProgress(msg.pct || 0, msg.file, msg.status);
       }
+      return;
+    }
+
+    if (msg.action === 'kokoro_export_progress') {
+      if (S.exporting) setStatus(`Generating WAV… ${msg.pct || 0}%`, true);
+      return;
+    }
+
+    if (msg.action === 'kokoro_export_ready') {
+      S.exporting = false;
+      syncExportUI();
+      try {
+        downloadWavBase64(msg.wavBase64);
+        setStatus('WAV downloaded');
+      } catch (e) {
+        setStatus('Export failed — file too large?');
+      }
+      return;
+    }
+
+    if (msg.action === 'kokoro_export_error') {
+      S.exporting = false;
+      syncExportUI();
+      setStatus('Export error: ' + (msg.error || 'unknown'));
       return;
     }
 

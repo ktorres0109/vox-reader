@@ -113,7 +113,7 @@ function interruptKokoroTab(tabId) {
 }
 
 async function routeKokoroAction(msg, tabId) {
-  if (msg.action === 'kokoro_load' || msg.action === 'kokoro_speak') {
+  if (msg.action === 'kokoro_load' || msg.action === 'kokoro_speak' || msg.action === 'kokoro_export') {
     const missing = await kokoroVendorMissing();
     if (missing) {
       notifyKokoroVendorMissing(tabId);
@@ -137,7 +137,7 @@ async function routeKokoroAction(msg, tabId) {
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
-  if (msg.action === 'kokoro_load' || msg.action === 'kokoro_speak' || msg.action === 'kokoro_stop' || msg.action === 'kokoro_warm_voice') {
+  if (msg.action === 'kokoro_load' || msg.action === 'kokoro_speak' || msg.action === 'kokoro_stop' || msg.action === 'kokoro_warm_voice' || msg.action === 'kokoro_export' || msg.action === 'kokoro_export_cancel') {
     const tabId = sender.tab?.id;
     if (msg.action === 'kokoro_stop') {
       if (tabId && kokoroActiveTabId === tabId) kokoroActiveTabId = null;
@@ -146,7 +146,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         .catch(() => {});
       return;
     }
-    if (msg.action === 'kokoro_load' || msg.action === 'kokoro_speak') {
+    if (msg.action === 'kokoro_export_cancel') {
+      sendToOffscreen({ ...msg, tabId });
+      return;
+    }
+    if (msg.action === 'kokoro_load' || msg.action === 'kokoro_speak' || msg.action === 'kokoro_export') {
       routeKokoroAction(msg, tabId);
       return;
     }
@@ -158,7 +162,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     msg.action === 'kokoro_ready'  ||
     msg.action === 'kokoro_progress' ||
     msg.action === 'kokoro_chunk'    || msg.action === 'kokoro_end'    ||
-    msg.action === 'kokoro_error'
+    msg.action === 'kokoro_error'    ||
+    msg.action === 'kokoro_export_progress' ||
+    msg.action === 'kokoro_export_ready'    ||
+    msg.action === 'kokoro_export_error'
   ) {
     if (msg.action === 'kokoro_end' && msg.tabId && kokoroActiveTabId === msg.tabId) {
       kokoroActiveTabId = null;
