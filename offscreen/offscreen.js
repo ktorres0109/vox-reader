@@ -76,11 +76,13 @@ function stopCurrentAudio() {
 // Returns { startedAt, duration } so content script can start its timing ticker.
 async function synthesizeAndPlay(text) {
   if (!synthesizer) throw new Error('Model not loaded');
+  if (!isPlaying) return null;
   const ctx = getAudioCtx();
   stopCurrentAudio();
 
   // mms-tts-eng — single speaker, no voice/speed params
   const out = await synthesizer(text);
+  if (!isPlaying) return null;
 
   const samples = out.audio;                    // Float32Array, 16000Hz mono
   const sr = out.sampling_rate || 16000;
@@ -128,8 +130,9 @@ async function runSentenceLoop(sentences, tabId, gen) {
     const sentence = sentences[i];
 
     try {
-      const { startedAt, duration } = await synthesizeAndPlay(sentence.text);
-      if (!isPlaying || generation !== gen) break;
+      const played = await synthesizeAndPlay(sentence.text);
+      if (!played || !isPlaying || generation !== gen) break;
+      const { startedAt, duration } = played;
 
       // Tell content script which sentence just started and when,
       // so it can resume the word-highlight ticker from the right word.
@@ -196,6 +199,7 @@ chrome.runtime.onMessage.addListener((msg) => {
 
   if (msg.action === 'kokoro_stop') {
     isPlaying = false;
+    generation++; // abort any in-flight synthesize() / playback loop
     stopCurrentAudio();
     return;
   }

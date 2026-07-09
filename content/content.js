@@ -20,6 +20,12 @@
     }
   }
 
+  function handleNavigation() {
+    if (S.speaking || S.paused) stop(false);
+    else { stopTTS(); stopTicker(); clearHL(); }
+    if (S.immersiveActive) exitImmersive();
+  }
+
   window.addEventListener('beforeunload', () => stopTTS());
   window.addEventListener('pagehide',     () => stopTTS());
 
@@ -28,16 +34,12 @@
     ['pushState', 'replaceState'].forEach(method => {
       const orig = history[method];
       history[method] = function (...args) {
-        stopTTS(); stopTicker();
-        if (S.immersiveActive) exitImmersive();
+        handleNavigation();
         return orig.apply(this, args);
       };
     });
   } catch (e) { /* history not writable on this page — skip */ }
-  window.addEventListener('popstate', () => {
-    stopTTS();
-    if (S.immersiveActive) exitImmersive();
-  });
+  window.addEventListener('popstate', () => handleNavigation());
 
   // ── State ──────────────────────────────────────────────────────────────────
   const S = {
@@ -204,6 +206,19 @@
     return document.scrollingElement || document.documentElement;
   }
 
+  function scrollWordIntoView(el) {
+    if (!el) return;
+    const scrollParent = getLikelyScrollParent(el);
+    if (scrollParent === document.scrollingElement || scrollParent === document.documentElement || scrollParent === document.body) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+    const elRect = el.getBoundingClientRect();
+    const parentRect = scrollParent.getBoundingClientRect();
+    const target = scrollParent.scrollTop + (elRect.top - parentRect.top) - (parentRect.height / 3);
+    scrollParent.scrollTo({ top: Math.max(0, target), behavior: 'smooth' });
+  }
+
   function sortInDocumentOrder(els) {
     return els.slice().sort((a, b) => {
       if (a === b) return 0;
@@ -226,8 +241,11 @@
     const txt = (el.innerText || '').trim();
     if (txt.length < 20) return false;
     if (isMathLikeText(txt)) return false;
+    // Off-screen / virtualized messages may have a zero viewport rect but real content.
     const rect = el.getBoundingClientRect();
-    return rect.width > 80 && rect.height > 16;
+    const inView = rect.width > 80 && rect.height > 16;
+    const hasLayout = el.offsetHeight > 16 || el.scrollHeight > 16;
+    return inView || (el.isConnected && hasLayout);
   }
 
   function rootsTextLength(roots) {
@@ -261,7 +279,39 @@
   }
 
   function queryChatCandidates(selectors) {
-    return Array.from(document.querySelectorAll(selectors.join(','))).filter(isValidChatRoot);
+    const candidates = [];
+    const seen = new Set();
+    function maybeAdd(el) {
+      if (seen.has(el) || !isValidChatRoot(el)) return;
+      seen.add(el);
+      candidates.push(el);
+    }
+    function testEl(el) {
+      for (const sel of selectors) {
+        try {
+          if (el.matches(sel)) { maybeAdd(el); return; }
+        } catch (_) {}
+      }
+    }
+    function walk(root) {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+      let n = walker.nextNode();
+      while (n) {
+        testEl(n);
+        if (n.shadowRoot) walk(n.shadowRoot);
+        n = walker.nextNode();
+      }
+    }
+    if (document.body) walk(document.body);
+    return candidates;
+  }
+
+  function rootsNeedRewrap() {
+    if (!S.words.length) return true;
+    return getReadableRoots().some(root => {
+      const text = (root.innerText || '').trim();
+      return text.length >= 20 && !root.querySelector('.vox-word');
+    });
   }
 
   function getChatRoots() {
@@ -363,6 +413,7 @@
         node.parentNode.replaceChild(frag, node);
       } else if (node.nodeType === Node.ELEMENT_NODE && !shouldSkip(node)) {
         Array.from(node.childNodes).forEach(walk);
+        if (node.shadowRoot) Array.from(node.shadowRoot.childNodes).forEach(walk);
       }
     }
     roots.forEach(root => Array.from(root.childNodes).forEach(walk));
@@ -460,7 +511,7 @@
     if (si !== S.currentSentence) {
       const firstWord = S.words[S.sentences[si]?.start];
       if (firstWord) {
-        firstWord.el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        scrollWordIntoView(firstWord.el);
         requestAnimationFrame(() => {
           requestAnimationFrame(() => placeSentenceOverlays(si));
         });
@@ -678,9 +729,10 @@
 
   function findFirstVisibleWordIdx() {
     if (!S.words.length) return 0;
+    const vh = window.innerHeight || document.documentElement.clientHeight;
     for (let i = 0; i < S.words.length; i++) {
       const rect = S.words[i].el.getBoundingClientRect();
-      if (rect.top >= 0 && rect.bottom > 0) return i;
+      if (rect.bottom > 0 && rect.top < vh) return i;
     }
     return 0;
   }
@@ -722,6 +774,14 @@
         const t = el.textContent.trim();
         if (t.length > 10 && !isMathLikeText(t) && !isMathElement(el)) {
           blocks.push({ tag: el.tagName.toLowerCase(), text: t });
+        }
+      });
+      // Chat UIs often use div-only markdown without <p> tags.
+      clone.querySelectorAll('div').forEach(el => {
+        if (el.querySelector('h1,h2,h3,h4,h5,h6,p,li,div')) return;
+        const t = el.textContent.trim();
+        if (t.length > 10 && !isMathLikeText(t) && !isMathElement(el)) {
+          blocks.push({ tag: 'p', text: t });
         }
       });
     });
@@ -794,7 +854,7 @@
     // state: 'loading' | 'ready' | 'error'
     const voiceSel = document.getElementById('vox-kokoro-voice-select');
     if (!voiceSel) return;
-    if (state === 'loading') {
+    if (state === 'loading' || state === 'downloading') {
       voiceSel.textContent = 'Loading…';
       voiceSel.classList.remove('vs-hidden');
     } else if (state === 'ready') {
@@ -819,7 +879,7 @@
 
     if (S.voiceEngine === 'kokoro') {
       // S.kokoroLoading reflects in-progress load this session; takes priority over cached flag
-      setKokoroUIState(S.kokoroLoading || !S.kokoroModelCached ? 'downloading' : 'ready');
+      setKokoroUIState(S.kokoroLoading || !S.kokoroModelCached ? 'loading' : 'ready');
     }
   }
 
@@ -981,7 +1041,7 @@
         const captured = _capturedSel; _capturedSel = null;
         if (captured) {
           handleSel(captured.text, captured.anchor);
-        } else if (!S.words.length) {
+        } else if (!S.words.length || rootsNeedRewrap()) {
           rewrap(() => speakFrom(findFirstVisibleWordIdx()));
         } else {
           const startIdx = S.currentWord === 0 ? findFirstVisibleWordIdx() : S.currentWord;
@@ -1068,6 +1128,7 @@
       S.scrubbing = false;
       const idx = Math.floor((e.target.value / 1000) * (S.words.length - 1));
       S.currentWord = idx;
+      highlightAt(idx);
       if (S.speaking || S.paused) speakFrom(idx);
     };
 
@@ -1247,7 +1308,7 @@
         document.documentElement.classList.remove('vox-reading');
         updatePlayBtn();
         setStatus('Error: ' + (msg.error || 'unknown'));
-        setKokoroUIState(S.kokoroModelCached ? 'ready' : 'downloading');
+        setKokoroUIState(S.kokoroModelCached ? 'ready' : 'loading');
       }
       return;
     }
