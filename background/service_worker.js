@@ -5,6 +5,9 @@ const CONTENT_CSS = ['content/content.css'];
 
 chrome.runtime.onInstalled.addListener((details) => {
   chrome.storage.sync.remove(['currentWord', 'playerX', 'playerY']);
+  if (details.reason === 'install' || details.reason === 'update') {
+    chrome.storage.local.remove(['kokoroModelCached', 'kokoroCacheVersion']);
+  }
   if (details.reason === 'install') {
     chrome.storage.sync.set({
       voiceEngine: 'kokoro',
@@ -83,6 +86,16 @@ async function sendToOffscreen(msg, maxRetries = 12) {
   }
 }
 
+async function kokoroVendorMissing() {
+  try {
+    const url = chrome.runtime.getURL('vendor/kokoro.web.js');
+    const res = await fetch(url, { method: 'HEAD' });
+    return !res.ok;
+  } catch {
+    return true;
+  }
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (msg.action === 'kokoro_load' || msg.action === 'kokoro_speak' || msg.action === 'kokoro_stop' || msg.action === 'kokoro_warm_voice') {
@@ -91,6 +104,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       chrome.offscreen.hasDocument()
         .then(ex => { if (ex) sendToOffscreen({ ...msg, tabId }); })
         .catch(() => {});
+      return;
+    }
+    if (msg.action === 'kokoro_load') {
+      kokoroVendorMissing().then((missing) => {
+        if (missing) {
+          if (tabId) {
+            chrome.tabs.sendMessage(tabId, {
+              action: 'kokoro_error',
+              error: 'Kokoro bundle missing — run: bash tools/fetch-deps.sh',
+              tabId,
+            }).catch(() => {});
+          }
+          return;
+        }
+        sendToOffscreen({ ...msg, tabId });
+      });
       return;
     }
     sendToOffscreen({ ...msg, tabId });

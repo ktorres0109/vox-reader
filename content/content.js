@@ -67,6 +67,7 @@
     kokoroDownloadPct: 0,
     chatDomDirty: false,          // chat DOM changed since last wrap
     speakEndIdx: null,            // when set, stop reading at this word index
+    _voxDomUpdate: false,         // true while wrap/unwrap mutates the page
   };
 
   const KOKORO_VOICES = [
@@ -116,13 +117,21 @@
 
   // kokoroModelCached lives in storage.local (not synced — model is device-specific)
   function loadKokoroFlag(cb) {
-    chrome.storage.local.get(['kokoroModelCached'], (r) => {
-      S.kokoroModelCached = !!r.kokoroModelCached;
+    const version = chrome.runtime.getManifest().version;
+    chrome.storage.local.get(['kokoroModelCached', 'kokoroCacheVersion'], (r) => {
+      S.kokoroModelCached = !!r.kokoroModelCached && r.kokoroCacheVersion === version;
       cb();
     });
   }
   function saveKokoroFlag() {
-    chrome.storage.local.set({ kokoroModelCached: true });
+    chrome.storage.local.set({
+      kokoroModelCached: true,
+      kokoroCacheVersion: chrome.runtime.getManifest().version,
+    });
+  }
+  function invalidateKokoroCache() {
+    S.kokoroModelCached = false;
+    chrome.storage.local.remove(['kokoroModelCached', 'kokoroCacheVersion']);
   }
 
   // ── DOM helpers ────────────────────────────────────────────────────────────
@@ -403,11 +412,32 @@
     rewrap(cb);
   }
 
+  function isVoxInternalNode(node) {
+    if (!node) return true;
+    const el = node.nodeType === Node.ELEMENT_NODE ? node
+      : node.nodeType === Node.TEXT_NODE ? node.parentElement : null;
+    if (!el) return true;
+    return !!el.closest('#vox-player, #vox-immersive, .vox-word');
+  }
+
+  function hasExternalMutation(mutations) {
+    for (const m of mutations) {
+      const nodes = [m.target, ...m.addedNodes, ...m.removedNodes];
+      for (const n of nodes) {
+        if (!isVoxInternalNode(n)) return true;
+      }
+    }
+    return false;
+  }
+
   let chatObserver = null;
   function startChatObserver() {
     if (chatObserver) return;
-    chatObserver = new MutationObserver(() => {
-      if (getChatRoots().length) S.chatDomDirty = true;
+    chatObserver = new MutationObserver((mutations) => {
+      if (S._voxDomUpdate) return;
+      if (getChatRoots().length && hasExternalMutation(mutations)) {
+        S.chatDomDirty = true;
+      }
     });
     chatObserver.observe(document.body, { childList: true, subtree: true, characterData: true });
   }
@@ -487,6 +517,7 @@
 
   // ── Word wrapping ──────────────────────────────────────────────────────────
   function wrapWords(rootOrRoots) {
+    S._voxDomUpdate = true;
     const roots = normalizeRoots(rootOrRoots);
     S.words = []; S.sentences = [];
     function walk(node) {
@@ -517,10 +548,12 @@
     roots.forEach(root => Array.from(root.childNodes).forEach(walk));
     buildSentences();
     applyColors();
+    S._voxDomUpdate = false;
   }
 
   function wrapWordsInRange(range) {
     if (!range || range.collapsed) return false;
+    S._voxDomUpdate = true;
     S.words = []; S.sentences = [];
 
     function intersects(node) {
@@ -583,9 +616,10 @@
       parent.replaceChild(frag, node);
     });
 
-    if (!S.words.length) return false;
+    if (!S.words.length) { S._voxDomUpdate = false; return false; }
     buildSentences();
     applyColors();
+    S._voxDomUpdate = false;
     return true;
   }
 
@@ -637,9 +671,11 @@
   }
 
   function unwrap() {
+    S._voxDomUpdate = true;
     document.querySelectorAll('.vox-word').forEach(sp =>
       sp.parentNode.replaceChild(document.createTextNode(sp.textContent), sp));
     S.words = []; S.sentences = []; clearHL();
+    S._voxDomUpdate = false;
   }
 
   // ── Highlighting ──────────────────────────────────────────────────────────
@@ -895,16 +931,18 @@
 
   function skipBack() {
     if (!S.words.length) return;
+    const maxIdx = S.speakEndIdx != null ? S.speakEndIdx : S.words.length - 1;
     const t = Math.max(0, S.currentWord - 15);
     S.currentSentence = -1;
-    if (S.speaking || S.paused) speakFrom(t);
+    if (S.speaking || S.paused) speakFrom(t, S.speakEndIdx);
     else { S.currentWord = t; highlightAt(t); }
   }
   function skipFwd() {
     if (!S.words.length) return;
-    const t = Math.min(S.words.length - 1, S.currentWord + 15);
+    const maxIdx = S.speakEndIdx != null ? S.speakEndIdx : S.words.length - 1;
+    const t = Math.min(maxIdx, S.currentWord + 15);
     S.currentSentence = -1;
-    if (S.speaking || S.paused) speakFrom(t);
+    if (S.speaking || S.paused) speakFrom(t, S.speakEndIdx);
     else { S.currentWord = t; highlightAt(t); }
   }
 
@@ -1321,7 +1359,7 @@
         const captured = _capturedSel; _capturedSel = null;
         if (captured) {
           readSelection(captured.text).catch(() => {});
-        } else if (!S.words.length || rootsNeedRewrap() || getChatRoots().length) {
+        } else if (!S.words.length || rootsNeedRewrap()) {
           await prepareAndRewrap(() => speakFrom(findFirstVisibleWordIdx()));
         } else {
           const startIdx = S.currentWord === 0 ? findFirstVisibleWordIdx() : S.currentWord;
@@ -1603,14 +1641,17 @@
     }
 
     if (msg.action === 'kokoro_error') {
+      const wasLoading = S.kokoroLoading;
       S.kokoroLoading = false;
+      if (wasLoading) invalidateKokoroCache();
       if (S.voiceEngine === 'kokoro') {
         S.speaking = false;
         stopTicker(); clearHL();
         document.documentElement.classList.remove('vox-reading');
         updatePlayBtn();
         setStatus('Error: ' + (msg.error || 'unknown'));
-        setKokoroUIState(S.kokoroModelCached ? 'ready' : 'loading');
+        setKokoroUIState(S.kokoroModelCached ? 'ready' : 'error');
+        syncInstallUI();
       }
       return;
     }
