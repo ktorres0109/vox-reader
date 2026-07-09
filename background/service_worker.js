@@ -19,7 +19,7 @@ async function ensureOffscreen() {
     await chrome.offscreen.createDocument({
       url: 'offscreen/offscreen.html',
       reasons: ['AUDIO_PLAYBACK'],
-      justification: 'Neural TTS synthesis (mms-tts-eng) and audio playback',
+      justification: 'Kokoro 82M neural TTS synthesis and audio playback',
     });
   } finally {
     offscreenCreating = false;
@@ -55,7 +55,7 @@ async function sendToOffscreen(msg, maxRetries = 12) {
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   // Content → offscreen (fire-and-forget — callers use .catch(() => {}), no response needed)
-  if (msg.action === 'kokoro_load' || msg.action === 'kokoro_speak' || msg.action === 'kokoro_stop') {
+  if (msg.action === 'kokoro_load' || msg.action === 'kokoro_speak' || msg.action === 'kokoro_stop' || msg.action === 'kokoro_warm_voice') {
     const tabId = sender.tab?.id;
     if (msg.action === 'kokoro_stop') {
       // every page unload fires a stop; don't CREATE the offscreen document
@@ -72,6 +72,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // Offscreen → content tab
   if (
     msg.action === 'kokoro_ready'  ||
+    msg.action === 'kokoro_progress' ||
     msg.action === 'kokoro_chunk'    || msg.action === 'kokoro_end'    ||
     msg.action === 'kokoro_error'
   ) {

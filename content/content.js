@@ -58,18 +58,30 @@
     scrubbing: false,
     overlayRafPending: false,
     // ── AI voice engine ──
-    voiceEngine: 'classic',       // 'classic' | 'kokoro'
+    voiceEngine: 'kokoro',        // default — AI Neural with Bella; classic available in Settings
     kokoroModelCached: false,     // true once model has successfully loaded (persisted to storage.local)
     kokoroLoading: false,         // model load in progress this session
+    kokoroVoice: 'af_bella',      // Kokoro voice id (af_bella, af_sarah, …)
+    kokoroDownloadPct: 0,
     chatDomDirty: false,          // chat DOM changed since last wrap
   };
+
+  const KOKORO_VOICES = [
+    { id: 'af_bella',   label: 'Bella (Female)' },
+    { id: 'af_sarah',   label: 'Sarah (Female)' },
+    { id: 'af_sky',     label: 'Sky (Female)' },
+    { id: 'af_nicole',  label: 'Nicole (Female)' },
+    { id: 'af_heart',   label: 'Heart (Female)' },
+    { id: 'am_adam',    label: 'Adam (Male)' },
+    { id: 'am_michael', label: 'Michael (Male)' },
+  ];
 
   // ── Prefs ──────────────────────────────────────────────────────────────────
   function loadPrefs(cb) {
     chrome.storage.sync.get([
       'speed','voiceName','shortcuts','highlightWord','highlightSentence',
       'sentenceStyle','wordColor','sentenceHex',
-      'voiceEngine',
+      'voiceEngine','kokoroVoice',
     ], (p) => {
       if (p.speed != null) S.speed = p.speed;
       if (p.voiceName) S.selectedVoiceName = p.voiceName;
@@ -80,6 +92,7 @@
       if (p.wordColor) S.wordColor = p.wordColor;
       if (p.sentenceHex) S.sentenceHex = p.sentenceHex;
       if (p.voiceEngine) S.voiceEngine = p.voiceEngine;
+      if (p.kokoroVoice) S.kokoroVoice = p.kokoroVoice;
       cb();
     });
   }
@@ -92,6 +105,7 @@
         sentenceStyle: S.sentenceStyle, wordColor: S.wordColor,
         sentenceHex: S.sentenceHex,
         voiceEngine: S.voiceEngine,
+        kokoroVoice: S.kokoroVoice,
       });
     } catch(e) { /* extension reloaded mid-session, ignore */ }
   }
@@ -738,6 +752,11 @@
   }
 
   function kokoroSpeakFrom(idx) {
+    if (!S.kokoroModelCached) {
+      setStatus('Install AI voice first — downloading…', true);
+      startKokoroDownload();
+      return;
+    }
     sendMsg({ action: 'kokoro_stop' });
     stopTicker(); clearHL();
     S.currentSentence = -1;
@@ -756,7 +775,7 @@
     highlightAt(startIdx);
     updatePlayBtn(); setStatus('Generating…', true);
 
-    sendMsg({ action: 'kokoro_speak', sentences, speed: S.speed });
+    sendMsg({ action: 'kokoro_speak', sentences, speed: S.speed, voice: S.kokoroVoice });
   }
 
   // ── Engine dispatcher ──────────────────────────────────────────────────────
@@ -941,20 +960,69 @@
   }
 
   // ── Kokoro UI helpers ──────────────────────────────────────────────────────
+  function startKokoroDownload() {
+    if (S.kokoroLoading || S.kokoroModelCached) return;
+    S.kokoroLoading = true;
+    S.kokoroDownloadPct = 0;
+    syncEngineUI();
+    syncInstallUI();
+    setStatus('Downloading Kokoro model…', true);
+    sendMsg({ action: 'kokoro_load', voice: S.kokoroVoice });
+  }
+
+  function syncInstallUI() {
+    const panel = document.getElementById('vox-kokoro-install');
+    const playBtn = document.getElementById('vox-playpause-bar');
+    if (!panel) return;
+    const show = S.voiceEngine === 'kokoro' && (!S.kokoroModelCached || S.kokoroLoading);
+    panel.classList.toggle('vs-hidden', !show);
+    if (playBtn) {
+      const blocked = S.voiceEngine === 'kokoro' && !S.kokoroModelCached;
+      playBtn.disabled = blocked;
+      playBtn.title = blocked ? 'AI voice must finish downloading first' : '';
+    }
+  }
+
+  function updateKokoroInstallProgress(pct, file, status) {
+    S.kokoroDownloadPct = pct;
+    const bar = document.getElementById('vox-install-progress');
+    const fileEl = document.getElementById('vox-install-file');
+    const statusEl = document.getElementById('vox-install-status');
+    if (bar) bar.value = Math.max(0, Math.min(100, pct));
+    if (fileEl) fileEl.textContent = file || '';
+    if (statusEl) {
+      statusEl.textContent = pct > 0
+        ? `Downloading Kokoro model… ${pct}%`
+        : (status || 'Downloading Kokoro model (~86MB) — required once');
+    }
+  }
+
+  function populateKokoroVoices() {
+    const sel = document.getElementById('vox-kokoro-voice-select');
+    if (!sel) return;
+    sel.innerHTML = '';
+    KOKORO_VOICES.forEach(v => {
+      const o = document.createElement('option');
+      o.value = v.id;
+      o.textContent = v.label;
+      if (v.id === S.kokoroVoice) o.selected = true;
+      sel.appendChild(o);
+    });
+    sel.disabled = !S.kokoroModelCached;
+  }
+
   function setKokoroUIState(state) {
-    // state: 'loading' | 'ready' | 'error'
     const voiceSel = document.getElementById('vox-kokoro-voice-select');
     if (!voiceSel) return;
     if (state === 'loading' || state === 'downloading') {
-      voiceSel.textContent = 'Loading…';
-      voiceSel.classList.remove('vs-hidden');
+      voiceSel.disabled = true;
     } else if (state === 'ready') {
-      voiceSel.textContent = 'MMS neural voice (English)';
-      voiceSel.classList.remove('vs-hidden');
+      voiceSel.disabled = false;
+      populateKokoroVoices();
     } else if (state === 'error') {
-      voiceSel.textContent = 'Load failed — retry by switching engines';
-      voiceSel.classList.remove('vs-hidden');
+      voiceSel.disabled = true;
     }
+    syncInstallUI();
   }
 
   function syncEngineUI() {
@@ -978,7 +1046,7 @@
   function createPlayer() {
     if (document.getElementById('vox-player')) {
       document.getElementById('vox-player').classList.remove('vox-hidden');
-      populateVoices(); syncEngineUI(); return;
+      populateVoices(); populateKokoroVoices(); syncEngineUI(); syncInstallUI(); return;
     }
 
     const p = document.createElement('div');
@@ -1008,6 +1076,12 @@
         <button class="vox-bar-btn" id="vox-close-bar" title="Close" aria-label="Close player">✕</button>
       </div>
 
+      <div id="vox-kokoro-install" class="vs-hidden" role="alert" aria-live="polite">
+        <p id="vox-install-status">AI Neural voice required — downloading once (~86MB)</p>
+        <progress id="vox-install-progress" max="100" value="0" aria-label="Download progress"></progress>
+        <p id="vox-install-file" class="vs-label-muted"></p>
+      </div>
+
       <!-- Settings panel -->
       <div id="vox-settings" role="dialog" aria-label="Voice settings">
         <div id="vox-settings-header">
@@ -1035,9 +1109,10 @@
             <div class="${S.voiceEngine==='kokoro'?'vs-hidden':''}" id="vox-classic-voice-section" style="margin-top:6px">
               <select id="vox-voice-select" aria-label="Select voice"></select>
             </div>
-            <!-- Kokoro voice — auto-loads on switch, model files bundled locally -->
+            <!-- Kokoro voice — model downloads on first enable -->
             <div class="${S.voiceEngine==='classic'?'vs-hidden':''}" id="vox-kokoro-section" style="margin-top:6px">
-              <span id="vox-kokoro-voice-select" class="vs-label-muted">${S.kokoroModelCached?'MMS neural voice (English)':'Loading…'}</span>
+              <select id="vox-kokoro-voice-select" aria-label="Kokoro voice"></select>
+              <p class="vs-kokoro-info">Kokoro 82M neural voices — one-time download required</p>
             </div>
           </div>
 
@@ -1096,6 +1171,7 @@
     });
     bindEvents();
     loadVoices();
+    populateKokoroVoices();
     window.speechSynthesis.addEventListener('voiceschanged', loadVoices);
     document.getElementById('vox-speed-slider').value = S.speed;
     const sl = S.speed.toFixed(1) + '×';
@@ -1108,13 +1184,11 @@
     // so the UI renders in loading state, then kick off the model load.
     // Offscreen handles already-loaded case with `if (synthesizer) return`.
     startChatObserver();
-    if (S.voiceEngine === 'kokoro' && !S.kokoroLoading) {
-      S.kokoroLoading = true;
-    }
     syncEngineUI();
-    if (S.kokoroLoading && S.voiceEngine === 'kokoro') {
-      setStatus('Loading AI voice…', true);
-      sendMsg({ action: 'kokoro_load' });
+    if (S.voiceEngine === 'kokoro' && !S.kokoroModelCached) {
+      startKokoroDownload();
+    } else {
+      syncInstallUI();
     }
   }
 
@@ -1201,16 +1275,22 @@
       if (S.voiceEngine === 'kokoro') return;
       stop(false);
       S.voiceEngine = 'kokoro';
-      // Set kokoroLoading BEFORE syncEngineUI so UI renders in loading state immediately
-      if (!S.kokoroLoading) S.kokoroLoading = true;
-      savePrefs(); syncEngineUI();
+      savePrefs();
+      syncEngineUI();
       document.getElementById('eng-classic').setAttribute('aria-pressed', 'false');
       document.getElementById('eng-kokoro').setAttribute('aria-pressed', 'true');
-      setStatus('Loading AI voice…', true);
-      sendMsg({ action: 'kokoro_load' });
+      if (!S.kokoroModelCached) startKokoroDownload();
+      else { setKokoroUIState('ready'); setStatus('AI voice ready — press Play', true); }
     };
 
-    // mms-tts-eng is single speaker — no voice select needed
+    document.getElementById('vox-kokoro-voice-select').onchange = (e) => {
+      S.kokoroVoice = e.target.value;
+      savePrefs();
+      if (S.kokoroModelCached) {
+        sendMsg({ action: 'kokoro_warm_voice', voice: S.kokoroVoice });
+        if (S.speaking || S.paused) speakFrom(S.currentWord);
+      }
+    };
 
     // Progress bar
     const prog = document.getElementById('vox-progress');
@@ -1322,6 +1402,7 @@
     const playing = S.speaking && !S.paused;
     btn.textContent = playing ? '⏸' : '▶';
     btn.setAttribute('aria-label', playing ? 'Pause' : 'Play');
+    syncInstallUI();
   }
 
   function setStatus(text, active = false) {
@@ -1383,10 +1464,19 @@
 
     if (msg.action === 'kokoro_ready') {
       S.kokoroModelCached = true; S.kokoroLoading = false;
+      S.kokoroDownloadPct = 100;
       saveKokoroFlag();
       if (S.voiceEngine === 'kokoro') {
         setKokoroUIState('ready');
+        updateKokoroInstallProgress(100, '', 'Download complete');
         setStatus('AI voice ready — press Play', true);
+      }
+      return;
+    }
+
+    if (msg.action === 'kokoro_progress') {
+      if (S.voiceEngine === 'kokoro') {
+        updateKokoroInstallProgress(msg.pct || 0, msg.file, msg.status);
       }
       return;
     }

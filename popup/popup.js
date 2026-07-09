@@ -18,7 +18,7 @@ document.getElementById('open-player').addEventListener('click', async () => {
     // Content script not yet injected — try injecting manually
     // (will throw on chrome:// or policy-blocked pages — catch and show error)
     try {
-      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content/content.js'] });
+      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content/content.js', 'content/tts_sync.js'] });
       await chrome.scripting.insertCSS({ target: { tabId: tab.id }, files: ['content/content.css'] });
       await chrome.tabs.sendMessage(tab.id, { action: 'toggle_player' });
       window.close();
