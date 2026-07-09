@@ -79,8 +79,8 @@ You can change voice anytime in **⚙ Settings → AI Neural**.
 | Action | How |
 |--------|-----|
 | Open player | Extension icon → **Open Player on Page** |
-| Play page | Press **▶** |
-| Read selection | Highlight text → **Alt+R** (or press ▶ with text selected) |
+| Read selection | Highlight text → **▶ Read Selected Text** in popup, right-click → **Read selection with Vox Reader**, or **Alt+R** |
+| Play page | Press **▶** in the floating player |
 | Pause / resume | **▶** again or **Alt+P** |
 | Stop | **Alt+S** |
 | Jump to word | Click a highlighted word while playing |
@@ -89,9 +89,17 @@ You can change voice anytime in **⚙ Settings → AI Neural**.
 | Immersive mode | **☰** — clean reading view |
 | Settings | **⚙** — speed, voice, highlights, shortcuts |
 
----
+## Read selected text
 
-## Voices
+Three ways to read only what you've highlighted:
+
+1. **Extension popup** — select text on the page → click the Vox icon → **▶ Read Selected Text**
+2. **Right-click** — select text → **Read selection with Vox Reader**
+3. **Keyboard** — select text → **Alt+R** (with the player open on the page)
+
+Selection reading wraps and highlights only the chosen passage — it won't continue into the rest of the page.
+
+---
 
 ### AI Neural (Kokoro 82M) — default
 

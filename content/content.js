@@ -66,6 +66,7 @@
     kokoroVoice: DEFAULT_KOKORO_VOICE,
     kokoroDownloadPct: 0,
     chatDomDirty: false,          // chat DOM changed since last wrap
+    speakEndIdx: null,            // when set, stop reading at this word index
   };
 
   const KOKORO_VOICES = [
@@ -518,6 +519,76 @@
     applyColors();
   }
 
+  function wrapWordsInRange(range) {
+    if (!range || range.collapsed) return false;
+    S.words = []; S.sentences = [];
+
+    function intersects(node) {
+      try { return range.intersectsNode(node); } catch (_) { return false; }
+    }
+
+    const root = range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
+      ? range.commonAncestorContainer
+      : range.commonAncestorContainer.parentElement;
+    if (!root) return false;
+
+    const textNodes = [];
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        if (!node.textContent.trim()) return NodeFilter.FILTER_REJECT;
+        const p = node.parentElement;
+        if (!p || shouldSkipWalk(p) || p.closest('#vox-player')) return NodeFilter.FILTER_REJECT;
+        return intersects(node) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+      },
+    });
+    let n;
+    while ((n = walker.nextNode())) textNodes.push(n);
+
+    textNodes.forEach((node) => {
+      const full = node.textContent;
+      let start = 0;
+      let end = full.length;
+      if (range.startContainer === node) start = range.startOffset;
+      if (range.endContainer === node) end = range.endOffset;
+      if (start >= end) return;
+
+      const parent = node.parentNode;
+      if (!parent) return;
+      const before = full.slice(0, start);
+      const middle = full.slice(start, end);
+      const after = full.slice(end);
+      const frag = document.createDocumentFragment();
+      if (before) frag.appendChild(document.createTextNode(before));
+
+      if (middle.trim()) {
+        const midFrag = document.createDocumentFragment();
+        const re = /(\S+|\s+)/g;
+        let m;
+        while ((m = re.exec(middle)) !== null) {
+          if (/\S/.test(m[0])) {
+            const span = document.createElement('span');
+            span.className = 'vox-word';
+            span.textContent = m[0];
+            span.dataset.voxIndex = S.words.length;
+            S.words.push({ el: span, text: m[0] });
+            midFrag.appendChild(span);
+          } else {
+            midFrag.appendChild(document.createTextNode(m[0]));
+          }
+        }
+        frag.appendChild(midFrag);
+      }
+
+      if (after) frag.appendChild(document.createTextNode(after));
+      parent.replaceChild(frag, node);
+    });
+
+    if (!S.words.length) return false;
+    buildSentences();
+    applyColors();
+    return true;
+  }
+
   function buildSentences() {
     S.sentences = [];
     if (!S.words.length) return;
@@ -694,30 +765,31 @@
     S.currentWord = idx; S.currentSentence = -1;
     if (!S.words.length) return;
 
-    const text = S.words.slice(idx).map(w => w.text).join(' ');
+    const endIdx = S.speakEndIdx != null ? S.speakEndIdx : S.words.length - 1;
+    const text = S.words.slice(idx, endIdx + 1).map(w => w.text).join(' ');
     const u = new SpeechSynthesisUtterance(text);
     u.rate = S.speed; u.lang = 'en-US';
     if (S.voice) u.voice = S.voice;
 
     highlightAt(idx);
-    const timings = buildTimings(idx);
+    const timings = buildTimings(idx, endIdx + 1);
     const startMs = Date.now();
     startTicker(timings, startMs);
 
     u.onboundary = (ev) => {
       if (ev.name !== 'word') return;
       let cc = 0, wi = idx;
-      for (let i = idx; i < S.words.length; i++) {
+      for (let i = idx; i <= endIdx; i++) {
         if (cc >= ev.charIndex) { wi = i; break; }
         cc += S.words[i].text.length + 1; wi = i + 1;
       }
-      const w = Math.min(wi, S.words.length - 1);
+      const w = Math.min(wi, endIdx);
       if (w > S.currentWord) { S.currentWord = w; highlightAt(w); }
     };
 
     u.onend = () => {
       stopTicker(); clearHL();
-      S.speaking = false; S.paused = false;
+      S.speaking = false; S.paused = false; S.speakEndIdx = null;
       document.documentElement.classList.remove('vox-reading');
       updatePlayBtn(); setStatus('Done'); S.currentWord = 0;
     };
@@ -740,15 +812,17 @@
 
   // ── Kokoro TTS ─────────────────────────────────────────────────────────────
   // Builds sentence list for the offscreen doc: [{text, startWordIdx}]
-  function getSentencesFrom(startIdx) {
-    // Find which sentence startIdx belongs to
+  function getSentencesFrom(startIdx, endIdx) {
     let startSi = getSentenceIdx(startIdx);
     if (startSi < 0) startSi = 0;
+    const cap = endIdx != null ? endIdx : S.words.length - 1;
 
     const result = [];
     for (let si = startSi; si < S.sentences.length; si++) {
       const { start, end } = S.sentences[si];
-      const text = S.words.slice(start, end + 1).map(w => w.text).join(' ');
+      if (start > cap) break;
+      const wordEnd = Math.min(end, cap);
+      const text = S.words.slice(start, wordEnd + 1).map(w => w.text).join(' ');
       if (text.trim()) result.push({ text, startWordIdx: start });
     }
     return result;
@@ -765,7 +839,7 @@
     S.currentSentence = -1;
     if (!S.words.length) return;
 
-    const sentences = getSentencesFrom(idx);
+    const sentences = getSentencesFrom(idx, S.speakEndIdx);
     if (!sentences.length) return;
 
     // Snap to sentence start — kokoro synthesizes full sentences, so highlight
@@ -782,7 +856,8 @@
   }
 
   // ── Engine dispatcher ──────────────────────────────────────────────────────
-  function speakFrom(idx) {
+  function speakFrom(idx, endIdx) {
+    if (endIdx != null) S.speakEndIdx = endIdx;
     if (S.voiceEngine === 'kokoro') kokoroSpeakFrom(idx);
     else classicSpeakFrom(idx);
   }
@@ -812,7 +887,7 @@
       window.speechSynthesis.cancel();
     }
     stopTicker(); clearHL();
-    S.speaking = false; S.paused = false;
+    S.speaking = false; S.paused = false; S.speakEndIdx = null;
     if (reset) S.currentWord = 0;
     document.documentElement.classList.remove('vox-reading');
     updatePlayBtn(); setStatus('Stopped'); savePrefs();
@@ -843,27 +918,63 @@
     return 0;
   }
 
-  async function handleSel(selText, anchor) {
-    function findAnchorIdx() {
-      if (!anchor || !S.words.length) return -1;
-      let el = anchor.nodeType === Node.TEXT_NODE ? anchor.parentElement : anchor;
-      while (el && !el.classList?.contains('vox-word')) el = el.parentElement;
-      return (el && el.dataset.voxIndex != null) ? parseInt(el.dataset.voxIndex) : -1;
+  function findWordIdxForText(text, startNear = 0) {
+    const parts = text.trim().split(/\s+/).filter(Boolean);
+    if (!parts.length) return -1;
+    const norm = (s) => s.replace(/\W/g, '').toLowerCase();
+    const first = norm(parts[0]);
+    for (let i = startNear; i < S.words.length; i++) {
+      if (norm(S.words[i].text) !== first) continue;
+      let ok = true;
+      for (let j = 1; j < parts.length && i + j < S.words.length; j++) {
+        if (norm(S.words[i + j].text) !== norm(parts[j])) { ok = false; break; }
+      }
+      if (ok) return i;
     }
-    function findByText(text) {
-      const first = text.trim().split(/\s+/)[0].replace(/\W/g, '').toLowerCase();
-      if (!first) return -1;
-      return S.words.findIndex(w => w.text.replace(/\W/g, '').toLowerCase() === first);
+    return S.words.findIndex(w => norm(w.text) === first);
+  }
+
+  async function readSelection(fallbackText) {
+    const sel = window.getSelection();
+    const text = (sel?.toString() || fallbackText || '').trim();
+    if (!text) {
+      setStatus('No text selected');
+      return;
     }
-    if (S.words.length && !rootsNeedRewrap()) {
-      let idx = findAnchorIdx();
-      if (idx < 0) idx = findByText(selText);
-      if (idx >= 0) { speakFrom(idx); return; }
+
+    if (!document.getElementById('vox-player')) createPlayer();
+
+    stop(false);
+    unwrap();
+
+    const range = sel?.rangeCount && !sel.isCollapsed ? sel.getRangeAt(0).cloneRange() : null;
+    if (range && wrapWordsInRange(range)) {
+      const endIdx = S.words.length - 1;
+      setStatus('Reading selection…', true);
+      speakFrom(0, endIdx);
+      return;
     }
+
     await prepareAndRewrap(() => {
-      const idx = findByText(selText);
-      speakFrom(idx >= 0 ? idx : 0);
+      const idx = findWordIdxForText(text);
+      if (idx < 0) {
+        setStatus('Selection not found on page');
+        return;
+      }
+      const wordCount = text.trim().split(/\s+/).filter(Boolean).length;
+      const endIdx = Math.min(idx + wordCount - 1, S.words.length - 1);
+      setStatus('Reading selection…', true);
+      speakFrom(idx, endIdx);
     });
+  }
+
+  async function handleSel(selText, anchor) {
+    const sel = window.getSelection();
+    if (sel?.toString().trim()) {
+      await readSelection();
+      return;
+    }
+    if (selText?.trim()) await readSelection(selText);
   }
 
   // ── Immersive ──────────────────────────────────────────────────────────────
@@ -1209,7 +1320,7 @@
       if (!S.speaking && !S.paused) {
         const captured = _capturedSel; _capturedSel = null;
         if (captured) {
-          handleSel(captured.text, captured.anchor).catch(() => {});
+          readSelection(captured.text).catch(() => {});
         } else if (!S.words.length || rootsNeedRewrap() || getChatRoots().length) {
           await prepareAndRewrap(() => speakFrom(findFirstVisibleWordIdx()));
         } else {
@@ -1430,6 +1541,13 @@
       return;
     }
 
+    if (msg.action === 'read_selection') {
+      loadPrefs(() => loadKokoroFlag(() => {
+        readSelection(msg.text).catch(() => {});
+      }));
+      return;
+    }
+
     // Kokoro responses from offscreen (routed through SW)
     if (msg.action === 'kokoro_chunk') {
       // A sentence just started playing — reset ticker to this sentence's word range.
@@ -1459,7 +1577,7 @@
 
     if (msg.action === 'kokoro_end') {
       stopTicker(); clearHL();
-      S.speaking = false; S.paused = false;
+      S.speaking = false; S.paused = false; S.speakEndIdx = null;
       document.documentElement.classList.remove('vox-reading');
       updatePlayBtn(); setStatus('Done'); S.currentWord = 0;
       return;
@@ -1510,7 +1628,7 @@
     if (e.key === S.shortcuts.read) {
       e.preventDefault();
       const sel = window.getSelection(); const text = sel.toString().trim();
-      if (text) { if (!document.getElementById('vox-player')) createPlayer(); handleSel(text, sel.anchorNode); }
+      if (text) { if (!document.getElementById('vox-player')) createPlayer(); readSelection(text).catch(() => {}); }
     }
   });
 

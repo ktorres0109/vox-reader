@@ -1,5 +1,8 @@
 // Vox Reader — background service worker
 
+const CONTENT_FILES = ['content/content.js', 'content/tts_sync.js'];
+const CONTENT_CSS = ['content/content.css'];
+
 chrome.runtime.onInstalled.addListener((details) => {
   chrome.storage.sync.remove(['currentWord', 'playerX', 'playerY']);
   if (details.reason === 'install') {
@@ -8,6 +11,34 @@ chrome.runtime.onInstalled.addListener((details) => {
       kokoroVoice: 'af_bella',
     });
   }
+  chrome.contextMenus.removeAll(() => {
+    chrome.contextMenus.create({
+      id: 'vox-read-selection',
+      title: 'Read selection with Vox Reader',
+      contexts: ['selection'],
+    });
+  });
+});
+
+async function injectContent(tabId) {
+  await chrome.scripting.executeScript({ target: { tabId }, files: CONTENT_FILES });
+  await chrome.scripting.insertCSS({ target: { tabId }, files: CONTENT_CSS });
+}
+
+async function sendToTab(tabId, msg) {
+  try {
+    await chrome.tabs.sendMessage(tabId, msg);
+  } catch (_) {
+    await injectContent(tabId);
+    await chrome.tabs.sendMessage(tabId, msg);
+  }
+}
+
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (info.menuItemId !== 'vox-read-selection' || !tab?.id) return;
+  const text = (info.selectionText || '').trim();
+  if (!text) return;
+  sendToTab(tab.id, { action: 'read_selection', text });
 });
 
 // ── Offscreen document management ──────────────────────────────────────────
@@ -32,22 +63,17 @@ async function ensureOffscreen() {
   }
 }
 
-// Send to offscreen with retry — handles both first-create and already-exists cases.
-// When doc exists from a previous SW lifecycle, offscreen_ready was already sent and
-// won't fire again, so we must poll directly instead of waiting for the signal.
 async function sendToOffscreen(msg, maxRetries = 12) {
   await ensureOffscreen();
   const fullMsg = { ...msg, target: 'offscreen' };
   for (let i = 0; i < maxRetries; i++) {
     try {
       await chrome.runtime.sendMessage(fullMsg);
-      return; // success
+      return;
     } catch (_) {
-      // Offscreen doc still loading its module — wait and retry
       await new Promise(r => setTimeout(r, 400));
     }
   }
-  // All retries exhausted — surface the failure so content script can recover
   if (msg.tabId) {
     chrome.tabs.sendMessage(msg.tabId, {
       action: 'kokoro_error',
@@ -57,15 +83,11 @@ async function sendToOffscreen(msg, maxRetries = 12) {
   }
 }
 
-// ── Message routing ─────────────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
-  // Content → offscreen (fire-and-forget — callers use .catch(() => {}), no response needed)
   if (msg.action === 'kokoro_load' || msg.action === 'kokoro_speak' || msg.action === 'kokoro_stop' || msg.action === 'kokoro_warm_voice') {
     const tabId = sender.tab?.id;
     if (msg.action === 'kokoro_stop') {
-      // every page unload fires a stop; don't CREATE the offscreen document
-      // just to tell it to stop — only route if it already exists
       chrome.offscreen.hasDocument()
         .then(ex => { if (ex) sendToOffscreen({ ...msg, tabId }); })
         .catch(() => {});
@@ -75,7 +97,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return;
   }
 
-  // Offscreen → content tab
   if (
     msg.action === 'kokoro_ready'  ||
     msg.action === 'kokoro_progress' ||
