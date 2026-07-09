@@ -73,14 +73,14 @@ function stopCurrentAudio() {
 }
 
 // Synthesize one chunk of text and play it via AudioContext.
-// Returns { startedAt, duration } so content script can start its timing ticker.
-async function synthesizeAndPlay(text) {
+// Speed is applied at playback time (model has no rate param).
+// Returns { startedAt, duration } — duration is wall-clock time at the given speed.
+async function synthesizeAndPlay(text, speed = 1.0) {
   if (!synthesizer) throw new Error('Model not loaded');
   if (!isPlaying) return null;
   const ctx = getAudioCtx();
   stopCurrentAudio();
 
-  // mms-tts-eng — single speaker, no voice/speed params
   const out = await synthesizer(text);
   if (!isPlaying) return null;
 
@@ -91,13 +91,16 @@ async function synthesizeAndPlay(text) {
 
   const src = ctx.createBufferSource();
   src.buffer = buf;
+  const rate = Math.max(0.5, Math.min(3.0, speed || 1.0));
+  src.playbackRate.value = rate;
   src.connect(ctx.destination);
   currentSource = src;
 
   const startedAt = Date.now();
   src.start();
 
-  return { startedAt, duration: samples.length / sr };
+  const naturalDuration = samples.length / sr;
+  return { startedAt, duration: naturalDuration / rate };
 }
 
 // ── Sentence-streaming synthesis loop ──────────────────────────────────────
@@ -105,7 +108,7 @@ async function synthesizeAndPlay(text) {
 // gen: snapshot of `generation` at call time. A new kokoro_speak increments
 // `generation`, so any in-flight loop sees gen !== generation and exits —
 // even if it's blocked inside `await synthesizer(text)` when the cancel arrives.
-async function runSentenceLoop(sentences, tabId, gen) {
+async function runSentenceLoop(sentences, tabId, gen, speed = 1.0) {
   isPlaying = true;
 
   // Speak may arrive before (or instead of) an explicit kokoro_load — e.g.
@@ -130,7 +133,7 @@ async function runSentenceLoop(sentences, tabId, gen) {
     const sentence = sentences[i];
 
     try {
-      const played = await synthesizeAndPlay(sentence.text);
+      const played = await synthesizeAndPlay(sentence.text, speed);
       if (!played || !isPlaying || generation !== gen) break;
       const { startedAt, duration } = played;
 
@@ -192,7 +195,7 @@ chrome.runtime.onMessage.addListener((msg) => {
     const thisGen = ++generation;
     // Small delay lets any in-progress synthesizer() call finish and see the stale gen
     setTimeout(() => {
-      runSentenceLoop(msg.sentences, msg.tabId, thisGen);
+      runSentenceLoop(msg.sentences, msg.tabId, thisGen, msg.speed || 1.0);
     }, 30);
     return;
   }

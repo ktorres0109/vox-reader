@@ -61,6 +61,7 @@
     voiceEngine: 'classic',       // 'classic' | 'kokoro'
     kokoroModelCached: false,     // true once model has successfully loaded (persisted to storage.local)
     kokoroLoading: false,         // model load in progress this session
+    chatDomDirty: false,          // chat DOM changed since last wrap
   };
 
   // ── Prefs ──────────────────────────────────────────────────────────────────
@@ -119,7 +120,7 @@
 
   // ── Skip / readable root ───────────────────────────────────────────────────
   const SKIP_TAGS = new Set(['SCRIPT','STYLE','NOSCRIPT','IFRAME','INPUT','TEXTAREA',
-    'NAV','ASIDE','TABLE','FIGURE','CODE','PRE','SELECT','BUTTON','FORM']);
+    'NAV','ASIDE','TABLE','FIGURE','SELECT','BUTTON','FORM']);
   const SKIP_ROLES = new Set(['navigation','contentinfo','complementary','search']);
   const MATH_CLASS_HINTS = ['math','katex','mathjax','mjx','equation','formula','latex'];
   // Assistant-specific selectors — tried first so user prompts / sidebars are not picked up.
@@ -192,6 +193,15 @@
     const cls = (el.className||'').toString().toLowerCase().split(/\s+/);
     const exact = ['toc','sidebar','toolbar','breadcrumb','site-nav','page-nav'];
     return exact.includes(id) || cls.some(c => exact.includes(c));
+  }
+
+  // Walk variant — includes <pre>/<code> so code blocks are read aloud.
+  function shouldSkipWalk(el) {
+    const tag = el.tagName;
+    if (tag === 'CODE' || tag === 'PRE') {
+      return isMathElement(el) || isMathLikeText((el.textContent || '').trim());
+    }
+    return shouldSkip(el);
   }
 
   function getLikelyScrollParent(el) {
@@ -307,11 +317,81 @@
   }
 
   function rootsNeedRewrap() {
-    if (!S.words.length) return true;
+    if (!S.words.length || S.chatDomDirty) {
+      S.chatDomDirty = false;
+      return true;
+    }
     return getReadableRoots().some(root => {
       const text = (root.innerText || '').trim();
       return text.length >= 20 && !root.querySelector('.vox-word');
     });
+  }
+
+  function getChatScrollContainer() {
+    const roots = getChatRoots();
+    if (roots.length) return getLikelyScrollParent(roots[0]);
+    const selectors = [
+      '[class*="conversation"]', '[class*="chat-history"]',
+      '[data-testid*="conversation"]', 'main', '[role="main"]',
+    ];
+    for (const sel of selectors) {
+      const el = document.querySelector(sel);
+      if (el && el.scrollHeight > el.clientHeight + 80) return el;
+    }
+    return null;
+  }
+
+  function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  // Scroll virtualized chat panes to force older messages into the DOM.
+  async function loadVirtualizedChatHistory() {
+    const container = getChatScrollContainer();
+    if (!container || container.scrollHeight <= container.clientHeight + 50) return;
+
+    const savedScroll = container.scrollTop;
+    let lastCount = getChatRoots().length;
+    let stablePasses = 0;
+
+    container.scrollTop = 0;
+    await sleep(150);
+
+    for (let step = 0; step < 50 && stablePasses < 3; step++) {
+      const count = getChatRoots().length;
+      if (count === lastCount) stablePasses++;
+      else { stablePasses = 0; lastCount = count; }
+
+      const next = Math.min(
+        container.scrollTop + container.clientHeight * 0.85,
+        container.scrollHeight
+      );
+      if (next <= container.scrollTop) break;
+      container.scrollTop = next;
+      await sleep(100);
+    }
+
+    container.scrollTop = 0;
+    await sleep(120);
+    container.scrollTop = savedScroll;
+    await sleep(80);
+  }
+
+  async function prepareAndRewrap(cb) {
+    if (getChatRoots().length) {
+      setStatus('Loading conversation…', true);
+      await loadVirtualizedChatHistory();
+    }
+    rewrap(cb);
+  }
+
+  let chatObserver = null;
+  function startChatObserver() {
+    if (chatObserver) return;
+    chatObserver = new MutationObserver(() => {
+      if (getChatRoots().length) S.chatDomDirty = true;
+    });
+    chatObserver.observe(document.body, { childList: true, subtree: true, characterData: true });
   }
 
   function getChatRoots() {
@@ -411,7 +491,7 @@
           }
         }
         node.parentNode.replaceChild(frag, node);
-      } else if (node.nodeType === Node.ELEMENT_NODE && !shouldSkip(node)) {
+      } else if (node.nodeType === Node.ELEMENT_NODE && !shouldSkipWalk(node)) {
         Array.from(node.childNodes).forEach(walk);
         if (node.shadowRoot) Array.from(node.shadowRoot.childNodes).forEach(walk);
       }
@@ -626,8 +706,11 @@
     };
     u.onerror = (e) => {
       stopTicker();
-      if (e.error === 'interrupted') return;
-      clearHL(); S.speaking = false;
+      if (e.error === 'interrupted') {
+        if (S.paused) return;
+        return;
+      }
+      clearHL(); S.speaking = false; S.paused = false;
       document.documentElement.classList.remove('vox-reading');
       updatePlayBtn(); setStatus('Error');
     };
@@ -673,7 +756,7 @@
     highlightAt(startIdx);
     updatePlayBtn(); setStatus('Generating…', true);
 
-    sendMsg({ action: 'kokoro_speak', sentences });
+    sendMsg({ action: 'kokoro_speak', sentences, speed: S.speed });
   }
 
   // ── Engine dispatcher ──────────────────────────────────────────────────────
@@ -683,20 +766,21 @@
   }
 
   function pauseResume() {
-    if (!S.speaking) return;
     if (S.paused) {
-      speakFrom(S.currentWord); // re-synthesize from current position
-    } else {
-      stopTicker();
-      if (S.voiceEngine === 'kokoro') {
-        sendMsg({ action: 'kokoro_stop' });
-      } else {
-        window.speechSynthesis.pause();
-      }
-      S.paused = true;
-      setStatus('Paused');
-      updatePlayBtn();
+      S.paused = false;
+      speakFrom(S.currentWord);
+      return;
     }
+    if (!S.speaking) return;
+    stopTicker();
+    if (S.voiceEngine === 'kokoro') {
+      sendMsg({ action: 'kokoro_stop' });
+    } else {
+      window.speechSynthesis.cancel();
+    }
+    S.paused = true;
+    setStatus('Paused');
+    updatePlayBtn();
   }
 
   function stop(reset = false) {
@@ -737,7 +821,7 @@
     return 0;
   }
 
-  function handleSel(selText, anchor) {
+  async function handleSel(selText, anchor) {
     function findAnchorIdx() {
       if (!anchor || !S.words.length) return -1;
       let el = anchor.nodeType === Node.TEXT_NODE ? anchor.parentElement : anchor;
@@ -749,12 +833,12 @@
       if (!first) return -1;
       return S.words.findIndex(w => w.text.replace(/\W/g, '').toLowerCase() === first);
     }
-    if (S.words.length) {
+    if (S.words.length && !rootsNeedRewrap()) {
       let idx = findAnchorIdx();
       if (idx < 0) idx = findByText(selText);
       if (idx >= 0) { speakFrom(idx); return; }
     }
-    rewrap(() => {
+    await prepareAndRewrap(() => {
       const idx = findByText(selText);
       speakFrom(idx >= 0 ? idx : 0);
     });
@@ -768,12 +852,19 @@
     const blocks = [];
     roots.forEach(root => {
       const clone = root.cloneNode(true);
-      clone.querySelectorAll('script,style,noscript,nav,aside,table,pre,code,figure,[role="navigation"],[role="complementary"]')
+      clone.querySelectorAll('script,style,noscript,nav,aside,table,figure,[role="navigation"],[role="complementary"]')
         .forEach(el => el.remove());
       clone.querySelectorAll('h1,h2,h3,h4,h5,h6,p,li').forEach(el => {
         const t = el.textContent.trim();
         if (t.length > 10 && !isMathLikeText(t) && !isMathElement(el)) {
           blocks.push({ tag: el.tagName.toLowerCase(), text: t });
+        }
+      });
+      clone.querySelectorAll('pre, code').forEach(el => {
+        if (el.tagName === 'CODE' && el.closest('pre')) return;
+        const t = el.textContent.trim();
+        if (t.length > 3 && !isMathLikeText(t) && !isMathElement(el)) {
+          blocks.push({ tag: 'p', text: t });
         }
       });
       // Chat UIs often use div-only markdown without <p> tags.
@@ -1016,6 +1107,7 @@
     // If engine was already set to kokoro from saved prefs, mark loading before syncEngineUI
     // so the UI renders in loading state, then kick off the model load.
     // Offscreen handles already-loaded case with `if (synthesizer) return`.
+    startChatObserver();
     if (S.voiceEngine === 'kokoro' && !S.kokoroLoading) {
       S.kokoroLoading = true;
     }
@@ -1036,13 +1128,13 @@
       _capturedSel = text ? { text, anchor: sel.anchorNode } : null;
     });
 
-    document.getElementById('vox-playpause-bar').onclick = () => {
+    document.getElementById('vox-playpause-bar').onclick = async () => {
       if (!S.speaking && !S.paused) {
         const captured = _capturedSel; _capturedSel = null;
         if (captured) {
-          handleSel(captured.text, captured.anchor);
-        } else if (!S.words.length || rootsNeedRewrap()) {
-          rewrap(() => speakFrom(findFirstVisibleWordIdx()));
+          handleSel(captured.text, captured.anchor).catch(() => {});
+        } else if (!S.words.length || rootsNeedRewrap() || getChatRoots().length) {
+          await prepareAndRewrap(() => speakFrom(findFirstVisibleWordIdx()));
         } else {
           const startIdx = S.currentWord === 0 ? findFirstVisibleWordIdx() : S.currentWord;
           speakFrom(startIdx);
@@ -1063,7 +1155,7 @@
       document.getElementById('vox-speed-val').textContent = label;
       document.getElementById('vox-speed-pill').textContent = label;
       savePrefs();
-      if (S.speaking) { const i = S.currentWord; speakFrom(i); }
+      if (S.speaking || S.paused) { const i = S.currentWord; speakFrom(i); }
     };
 
     document.getElementById('vox-settings-btn').onclick = () => {
@@ -1085,7 +1177,7 @@
     speedSlider.onchange = (e) => {
       S.speed = parseFloat(e.target.value);
       savePrefs();
-      if (S.speaking) { const i = S.currentWord; speakFrom(i); }
+      if (S.speaking || S.paused) { const i = S.currentWord; speakFrom(i); }
     };
 
     // Classic voice select
@@ -1257,8 +1349,7 @@
     // Kokoro responses from offscreen (routed through SW)
     if (msg.action === 'kokoro_chunk') {
       // A sentence just started playing — reset ticker to this sentence's word range.
-      // Use actual audio duration (msg.duration) to pace word timings linearly rather
-      // than BASE_CPS * S.speed, because mms-tts-eng ignores the speed parameter.
+      // Use actual audio duration (wall-clock, includes playbackRate speed).
       const si = getSentenceIdx(msg.startWordIdx);
       const sent = si >= 0 ? S.sentences[si] : null;
       let timings;
@@ -1319,7 +1410,7 @@
     if (!mod) return;
     if (e.key === S.shortcuts.play) {
       e.preventDefault();
-      if (!S.speaking) document.getElementById('vox-playpause-bar')?.click();
+      if (!S.speaking && !S.paused) document.getElementById('vox-playpause-bar')?.click();
       else pauseResume();
     }
     if (e.key === S.shortcuts.stop) { e.preventDefault(); stop(true); }
