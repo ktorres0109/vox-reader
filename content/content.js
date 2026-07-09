@@ -417,8 +417,12 @@
     await sleep(80);
   }
 
-  async function prepareAndRewrap(cb) {
-    if (getChatRoots().length) {
+  async function prepareAndRewrap(cb, opts = {}) {
+    const chatRoots = getChatRoots();
+    const needsFullHistory = opts.forceFullHistory || (
+      chatRoots.length && !chatRoots.some(r => r.querySelector('.vox-word'))
+    );
+    if (needsFullHistory) {
       setStatus('Loading conversation…', true);
       await loadVirtualizedChatHistory();
     }
@@ -450,8 +454,61 @@
     if (chatDirtyTimer) return;
     chatDirtyTimer = setTimeout(() => {
       chatDirtyTimer = null;
-      if (getChatRoots().length) S.chatDomDirty = true;
+      if (!getChatRoots().length) return;
+      S.chatDomDirty = true;
+      if (S.speaking || S.paused) scheduleChatPlaybackSync();
     }, 400);
+  }
+
+  let chatPlaybackSyncTimer = null;
+
+  function wordsDomStale() {
+    return S.words.some(w => w.el && !w.el.isConnected);
+  }
+
+  function getWordAnchor(idx, radius = 3) {
+    const start = Math.max(0, idx - radius);
+    const end = Math.min(S.words.length - 1, idx + radius);
+    return S.words.slice(start, end + 1).map(w => w.text).join(' ');
+  }
+
+  function scheduleChatPlaybackSync() {
+    if (chatPlaybackSyncTimer || S.immersiveActive) return;
+    chatPlaybackSyncTimer = setTimeout(() => {
+      chatPlaybackSyncTimer = null;
+      if (!S.chatDomDirty && !wordsDomStale()) return;
+      if (!S.speaking && !S.paused) return;
+      syncChatDomDuringPlayback();
+    }, 700);
+  }
+
+  function restartClassicTicker() {
+    if (!S.speaking || S.paused || S.voiceEngine !== 'classic') return;
+    const cap = S.speakEndIdx != null ? S.speakEndIdx + 1 : S.words.length;
+    const timings = buildTimings(S.currentWord, cap);
+    startTicker(timings, Date.now());
+  }
+
+  function syncChatDomDuringPlayback() {
+    if (S.immersiveActive) return;
+    const savedIdx = S.currentWord;
+    const savedEndIdx = S.speakEndIdx;
+    const anchor = getWordAnchor(savedIdx);
+    S.chatDomDirty = false;
+    stopTicker();
+    clearHL();
+    rewrap(() => {
+      let newIdx = anchor ? findWordIdxForText(anchor, Math.max(0, savedIdx - 20)) : savedIdx;
+      if (newIdx < 0) newIdx = Math.min(savedIdx, Math.max(0, S.words.length - 1));
+      S.currentWord = newIdx;
+      if (savedEndIdx != null) {
+        S.speakEndIdx = Math.min(savedEndIdx, S.words.length - 1);
+        if (S.speakEndIdx < newIdx) S.speakEndIdx = newIdx;
+      }
+      if (S.words[newIdx]) highlightAt(newIdx);
+      restartClassicTicker();
+      scheduleOverlayRefresh();
+    });
   }
 
   function startChatObserver() {
@@ -733,6 +790,10 @@
   }
 
   function highlightAt(idx) {
+    if (S.words[idx]?.el && !S.words[idx].el.isConnected) {
+      scheduleChatPlaybackSync();
+      return;
+    }
     if (_activeWordEl) { _activeWordEl.classList.remove('vox-word-active'); _activeWordEl = null; }
     if (S.highlightWord && S.words[idx]) {
       _activeWordEl = S.words[idx].el;
@@ -928,7 +989,7 @@
   function pauseResume() {
     if (S.paused) {
       S.paused = false;
-      speakFrom(S.currentWord);
+      speakFrom(S.currentWord, S.speakEndIdx);
       return;
     }
     if (!S.speaking) return;
@@ -1125,13 +1186,12 @@
   // ── Audio export ───────────────────────────────────────────────────────────
   function exportAudio() {
     const doExport = () => {
-      setStatus('Use system recorder to capture audio', false);
+      setStatus('Previewing speech (classic voice)…', true);
       const text = S.words.map(w => w.text).join(' ');
       if (!text) return;
-      // Always use classic engine for export (Web Speech routes to system audio)
       const u = new SpeechSynthesisUtterance(text);
       u.rate = S.speed; if (S.voice) u.voice = S.voice;
-      u.onend = () => setStatus('Done');
+      u.onend = () => setStatus('Preview done');
       window.speechSynthesis.speak(u);
     };
     if (!S.words.length) { rewrap(doExport); return; }
@@ -1330,8 +1390,8 @@
 
           <!-- Export + status on same row -->
           <div class="vs vs-bottom-row">
-            <button class="vs-export-btn" id="exp-pdf">PDF</button>
-            <button class="vs-export-btn" id="exp-mp3">Audio</button>
+            <button class="vs-export-btn" id="exp-pdf" title="Print this page">Print</button>
+            <button class="vs-export-btn" id="exp-mp3" title="Preview with classic voice (not a file download)">Preview</button>
             <span id="vox-status" role="status" aria-live="polite">Ready</span>
           </div>
 
@@ -1544,7 +1604,9 @@
       if (!S.speaking && !S.paused) return;
       const sp = e.target.closest('.vox-word');
       if (!sp || sp.dataset.voxIndex == null) return;
-      speakFrom(parseInt(sp.dataset.voxIndex));
+      const idx = parseInt(sp.dataset.voxIndex, 10);
+      if (S.speakEndIdx != null && idx > S.speakEndIdx) return;
+      speakFrom(idx, S.speakEndIdx);
     });
 
     // Draggable bar
