@@ -120,16 +120,27 @@
     'NAV','ASIDE','TABLE','FIGURE','CODE','PRE','SELECT','BUTTON','FORM']);
   const SKIP_ROLES = new Set(['navigation','contentinfo','complementary','search']);
   const MATH_CLASS_HINTS = ['math','katex','mathjax','mjx','equation','formula','latex'];
-  const CHAT_RESPONSE_SELECTORS = [
+  // Assistant-specific selectors — tried first so user prompts / sidebars are not picked up.
+  const ASSISTANT_MESSAGE_SELECTORS = [
+    '[data-message-author-role="assistant"]',
+    '[data-role="assistant"]',
+    '[data-message-author="assistant"]',
+    '.font-claude-response',
+    '[data-testid="ai-message"]',
+    '[data-testid="message-assistant"]',
+    'model-response',
     '.model-response',
     '[data-testid="model-response"]',
     '[data-test-id="model-response"]',
     '.gemini-response',
-    '[data-message-author-role="assistant"]',
-    '[data-testid*="model"]',
+    '.agent-turn',
+  ];
+  const CHAT_RESPONSE_SELECTORS = [
+    ...ASSISTANT_MESSAGE_SELECTORS,
     '[data-testid*="assistant"]',
     '[class*="model-response"]',
     '[class*="message-content"]',
+    'message-content',
     '[class*="markdown"]',
     '[class*="prose"]',
     '[class*="response"]',
@@ -170,6 +181,7 @@
 
   function shouldSkip(el) {
     if (SKIP_TAGS.has(el.tagName)) return true;
+    if (el.id === 'vox-player' || el.closest('#vox-player')) return true;
     if (isLikelyMapOrMapOverlay(el)) return true;
     if (isMathElement(el)) return true;
     const role = el.getAttribute('role');
@@ -192,16 +204,40 @@
     return document.scrollingElement || document.documentElement;
   }
 
-  function lastInDocumentOrder(els) {
-    if (!els.length) return null;
-    return els.reduce((a, b) => {
-      if (a === b) return a;
-      return a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? b : a;
+  function sortInDocumentOrder(els) {
+    return els.slice().sort((a, b) => {
+      if (a === b) return 0;
+      return a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
     });
   }
 
   function innermostOnlyCandidates(nodes) {
     return nodes.filter((n) => !nodes.some((m) => m !== n && n.contains(m)));
+  }
+
+  function isUserMessage(el) {
+    if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
+    if (el.matches('[data-message-author-role="user"], [data-role="user"], [data-message-author="user"], .user-query, user-query, [data-testid="human-turn-input"]')) return true;
+    return !!el.closest('[data-message-author-role="user"], [data-role="user"], [data-message-author="user"], .user-query, user-query, [data-testid="human-turn-input"]');
+  }
+
+  function isValidChatRoot(el) {
+    if (shouldSkip(el) || isUserMessage(el)) return false;
+    const txt = (el.innerText || '').trim();
+    if (txt.length < 20) return false;
+    if (isMathLikeText(txt)) return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 80 && rect.height > 16;
+  }
+
+  function rootsTextLength(roots) {
+    const list = Array.isArray(roots) ? roots : [roots];
+    return list.reduce((n, r) => n + (r.innerText || '').trim().length, 0);
+  }
+
+  function normalizeRoots(rootOrRoots) {
+    if (!rootOrRoots) return [document.body];
+    return Array.isArray(rootOrRoots) ? rootOrRoots : [rootOrRoots];
   }
 
   function narrowChatRootExcludingMap(host) {
@@ -224,37 +260,39 @@
     return cands[0] || host;
   }
 
-  function getRoot() {
-    const chatCandidates = Array.from(
-      document.querySelectorAll(CHAT_RESPONSE_SELECTORS.join(','))
-    ).filter(el => {
-      if (shouldSkip(el)) return false;
-      const txt = (el.innerText || '').trim();
-      if (txt.length < 120) return false;
-      if (isMathLikeText(txt)) return false;
-      const rect = el.getBoundingClientRect();
-      return rect.width > 150 && rect.height > 40;
-    });
-    if (chatCandidates.length) {
-      const specific = innermostOnlyCandidates(chatCandidates);
-      const host = lastInDocumentOrder(specific.length ? specific : chatCandidates);
-      return narrowChatRootExcludingMap(host);
-    }
+  function queryChatCandidates(selectors) {
+    return Array.from(document.querySelectorAll(selectors.join(','))).filter(isValidChatRoot);
+  }
+
+  function getChatRoots() {
+    let candidates = queryChatCandidates(ASSISTANT_MESSAGE_SELECTORS);
+    if (!candidates.length) candidates = queryChatCandidates(CHAT_RESPONSE_SELECTORS);
+    if (!candidates.length) return [];
+
+    const specific = innermostOnlyCandidates(candidates);
+    return sortInDocumentOrder(
+      (specific.length ? specific : candidates).map(narrowChatRootExcludingMap)
+    ).filter(el => (el.innerText || '').trim().length >= 20);
+  }
+
+  function getReadableRoots() {
+    const chatRoots = getChatRoots();
+    if (chatRoots.length) return chatRoots;
 
     const mdBody = document.querySelector(
       '.markdown-body, [class*="markdown-body"], .markdown-content, .md-content, ' +
       '.post-content, .entry-content, .article-content'
     );
-    if (mdBody && (mdBody.innerText||'').trim().length > 100) return mdBody;
+    if (mdBody && (mdBody.innerText||'').trim().length > 100) return [mdBody];
 
     const semantic = document.querySelector('article, main, [role="main"]');
-    if (semantic) return semantic;
+    if (semantic) return [semantic];
 
     const proseEls = Array.from(document.querySelectorAll('[class*="prose"]'))
       .filter(el => (el.innerText||'').trim().length > 200);
     if (proseEls.length) {
       proseEls.sort((a,b) => (b.innerText||'').length - (a.innerText||'').length);
-      return proseEls[0];
+      return [proseEls[0]];
     }
 
     const candidates = Array.from(document.querySelectorAll('div, section'))
@@ -268,33 +306,40 @@
       const score   = density * Math.log((el.innerText||'').length + 1);
       if (score > bestScore) { bestScore = score; best = el; }
     }
-    return best || document.body;
+    return [best || document.body];
+  }
+
+  // Back-compat: single element for callers that expect one root.
+  function getRoot() {
+    const roots = getReadableRoots();
+    return roots.length === 1 ? roots[0] : roots;
   }
 
   function waitForContent(cb, maxWait = 8000) {
     const start = Date.now();
     let lastLen = 0, stableMs = 0;
     function check() {
-      const root = getRoot();
-      const len  = (root.innerText||'').trim().length;
+      const roots = getReadableRoots();
+      const len  = rootsTextLength(roots);
       const elapsed = Date.now() - start;
       if (len > 200) {
         if (len === lastLen) {
           stableMs += 300;
-          if (stableMs >= 600) { cb(root); return; }
+          if (stableMs >= 600) { cb(roots); return; }
         } else {
           stableMs = 0;
         }
       }
       lastLen = len;
-      if (elapsed > maxWait) { cb(root); return; }
+      if (elapsed > maxWait) { cb(roots); return; }
       setTimeout(check, 300);
     }
     check();
   }
 
   // ── Word wrapping ──────────────────────────────────────────────────────────
-  function wrapWords(root) {
+  function wrapWords(rootOrRoots) {
+    const roots = normalizeRoots(rootOrRoots);
     S.words = []; S.sentences = [];
     function walk(node) {
       if (node.nodeType === Node.TEXT_NODE) {
@@ -320,7 +365,7 @@
         Array.from(node.childNodes).forEach(walk);
       }
     }
-    Array.from(root.childNodes).forEach(walk);
+    roots.forEach(root => Array.from(root.childNodes).forEach(walk));
     buildSentences();
     applyColors();
   }
@@ -358,16 +403,16 @@
     // strip those spans and then wrap the wrong root.
     if (S.immersiveActive) { if (cb) cb(); return; }
     unwrap();
-    const root = getRoot();
-    wrapWords(root);
+    const roots = getReadableRoots();
+    wrapWords(roots);
     if (S.words.length > 0) { if (cb) cb(); return; }
-    if (root !== document.body) {
+    if (!roots.includes(document.body)) {
       wrapWords(document.body);
       if (S.words.length > 0) { if (cb) cb(); return; }
     }
     waitForContent((r) => {
       if (!S.words.length) wrapWords(r);
-      if (!S.words.length && r !== document.body) wrapWords(document.body);
+      if (!S.words.length && !normalizeRoots(r).includes(document.body)) wrapWords(document.body);
       if (cb) cb();
     });
   }
@@ -667,15 +712,18 @@
   function toggleImmersive() { S.immersiveActive ? exitImmersive() : enterImmersive(); }
 
   function enterImmersive() {
-    const root = getRoot().cloneNode(true);
-    root.querySelectorAll('script,style,noscript,nav,aside,table,pre,code,figure,[role="navigation"],[role="complementary"]')
-      .forEach(el => el.remove());
+    const roots = getReadableRoots();
     const blocks = [];
-    root.querySelectorAll('h1,h2,h3,h4,h5,h6,p,li').forEach(el => {
-      const t = el.textContent.trim();
-      if (t.length > 10 && !isMathLikeText(t) && !isMathElement(el)) {
-        blocks.push({ tag: el.tagName.toLowerCase(), text: t });
-      }
+    roots.forEach(root => {
+      const clone = root.cloneNode(true);
+      clone.querySelectorAll('script,style,noscript,nav,aside,table,pre,code,figure,[role="navigation"],[role="complementary"]')
+        .forEach(el => el.remove());
+      clone.querySelectorAll('h1,h2,h3,h4,h5,h6,p,li').forEach(el => {
+        const t = el.textContent.trim();
+        if (t.length > 10 && !isMathLikeText(t) && !isMathElement(el)) {
+          blocks.push({ tag: el.tagName.toLowerCase(), text: t });
+        }
+      });
     });
     if (!blocks.length) return;
 
