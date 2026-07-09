@@ -40,6 +40,7 @@
     });
   } catch (e) { /* history not writable on this page — skip */ }
   window.addEventListener('popstate', () => handleNavigation());
+  window.addEventListener('hashchange', () => handleNavigation());
 
   // ── State ──────────────────────────────────────────────────────────────────
   const DEFAULT_KOKORO_VOICE = 'af_bella';
@@ -134,6 +135,17 @@
     chrome.storage.local.remove(['kokoroModelCached', 'kokoroCacheVersion']);
   }
 
+  function ensurePlayerReady(cb) {
+    loadPrefs(() => loadKokoroFlag(() => {
+      createPlayer();
+      if (cb) cb();
+    }));
+  }
+
+  function shortcutKeyMatches(e, key) {
+    return e.key.toLowerCase() === (key || '').toLowerCase();
+  }
+
   // ── DOM helpers ────────────────────────────────────────────────────────────
   function applyColors() {
     document.documentElement.style.setProperty('--vox-word-color', S.wordColor);
@@ -141,6 +153,7 @@
     const r = parseInt(h.slice(1,3),16), g = parseInt(h.slice(3,5),16), b = parseInt(h.slice(5,7),16);
     S._sentenceRgba = `rgba(${r},${g},${b},0.25)`;
     document.documentElement.style.setProperty('--vox-sentence-color', S.sentenceHex);
+    document.documentElement.style.setProperty('--vox-sentence-bg', S._sentenceRgba);
     document.documentElement.classList.toggle('vox-sentence-style-bg', S.sentenceStyle === 'bg');
     document.documentElement.classList.toggle('vox-sentence-style-underline', S.sentenceStyle === 'underline');
   }
@@ -431,13 +444,21 @@
   }
 
   let chatObserver = null;
+  let chatDirtyTimer = null;
+
+  function markChatDomDirty() {
+    if (chatDirtyTimer) return;
+    chatDirtyTimer = setTimeout(() => {
+      chatDirtyTimer = null;
+      if (getChatRoots().length) S.chatDomDirty = true;
+    }, 400);
+  }
+
   function startChatObserver() {
     if (chatObserver) return;
     chatObserver = new MutationObserver((mutations) => {
       if (S._voxDomUpdate) return;
-      if (getChatRoots().length && hasExternalMutation(mutations)) {
-        S.chatDomDirty = true;
-      }
+      if (hasExternalMutation(mutations)) markChatDomDirty();
     });
     chatObserver.observe(document.body, { childList: true, subtree: true, characterData: true });
   }
@@ -518,8 +539,9 @@
   // ── Word wrapping ──────────────────────────────────────────────────────────
   function wrapWords(rootOrRoots) {
     S._voxDomUpdate = true;
-    const roots = normalizeRoots(rootOrRoots);
-    S.words = []; S.sentences = [];
+    try {
+      const roots = normalizeRoots(rootOrRoots);
+      S.words = []; S.sentences = [];
     function walk(node) {
       if (node.nodeType === Node.TEXT_NODE) {
         const text = node.textContent;
@@ -548,13 +570,16 @@
     roots.forEach(root => Array.from(root.childNodes).forEach(walk));
     buildSentences();
     applyColors();
-    S._voxDomUpdate = false;
+    } finally {
+      S._voxDomUpdate = false;
+    }
   }
 
   function wrapWordsInRange(range) {
     if (!range || range.collapsed) return false;
     S._voxDomUpdate = true;
-    S.words = []; S.sentences = [];
+    try {
+      S.words = []; S.sentences = [];
 
     function intersects(node) {
       try { return range.intersectsNode(node); } catch (_) { return false; }
@@ -616,11 +641,13 @@
       parent.replaceChild(frag, node);
     });
 
-    if (!S.words.length) { S._voxDomUpdate = false; return false; }
+    if (!S.words.length) return false;
     buildSentences();
     applyColors();
-    S._voxDomUpdate = false;
     return true;
+    } finally {
+      S._voxDomUpdate = false;
+    }
   }
 
   function buildSentences() {
@@ -1565,24 +1592,33 @@
   function updateProgress() {
     if (S.scrubbing) return;
     const el = document.getElementById('vox-progress');
-    if (el && S.words.length > 1) {
-      const val = Math.floor((S.currentWord / (S.words.length - 1)) * 1000);
-      el.value = val;
-      el.setAttribute('aria-valuenow', Math.round((S.currentWord / (S.words.length - 1)) * 100));
-    }
+    if (!el || S.words.length < 1) return;
+    const denom = Math.max(1, S.words.length - 1);
+    const val = Math.floor((S.currentWord / denom) * 1000);
+    el.value = val;
+    el.setAttribute('aria-valuenow', Math.round((S.currentWord / denom) * 100));
   }
 
   // ── Message + keyboard ─────────────────────────────────────────────────────
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg.action === 'toggle_player') {
-      loadPrefs(() => loadKokoroFlag(() => createPlayer()));
+      ensurePlayerReady();
       return;
     }
 
     if (msg.action === 'read_selection') {
-      loadPrefs(() => loadKokoroFlag(() => {
+      ensurePlayerReady(() => {
         readSelection(msg.text).catch(() => {});
-      }));
+      });
+      return;
+    }
+
+    if (msg.action === 'kokoro_interrupted') {
+      stopTicker(); clearHL();
+      S.speaking = false; S.paused = false;
+      document.documentElement.classList.remove('vox-reading');
+      updatePlayBtn();
+      setStatus('Stopped — playback in another tab');
       return;
     }
 
@@ -1658,18 +1694,23 @@
   });
 
   document.addEventListener('keydown', (e) => {
-    const mod = e.altKey;
-    if (!mod) return;
-    if (e.key === S.shortcuts.play) {
+    if (!e.altKey) return;
+    if (shortcutKeyMatches(e, S.shortcuts.play)) {
       e.preventDefault();
-      if (!S.speaking && !S.paused) document.getElementById('vox-playpause-bar')?.click();
-      else pauseResume();
+      ensurePlayerReady(() => {
+        if (!S.speaking && !S.paused) document.getElementById('vox-playpause-bar')?.click();
+        else pauseResume();
+      });
     }
-    if (e.key === S.shortcuts.stop) { e.preventDefault(); stop(true); }
-    if (e.key === S.shortcuts.read) {
+    if (shortcutKeyMatches(e, S.shortcuts.stop)) {
       e.preventDefault();
-      const sel = window.getSelection(); const text = sel.toString().trim();
-      if (text) { if (!document.getElementById('vox-player')) createPlayer(); readSelection(text).catch(() => {}); }
+      stop(true);
+    }
+    if (shortcutKeyMatches(e, S.shortcuts.read)) {
+      e.preventDefault();
+      const sel = window.getSelection();
+      const text = sel?.toString().trim();
+      if (text) ensurePlayerReady(() => { readSelection(text).catch(() => {}); });
     }
   });
 

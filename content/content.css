@@ -13,7 +13,7 @@
 }
 
 :root.vox-sentence-style-bg .vox-sentence-active {
-  background: rgba(245, 158, 11, 0.25);
+  background: var(--vox-sentence-bg, rgba(245, 158, 11, 0.25));
 }
 
 :root.vox-sentence-style-underline .vox-sentence-active {
