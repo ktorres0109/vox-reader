@@ -67,6 +67,8 @@
     kokoroVoice: DEFAULT_KOKORO_VOICE,
     kokoroDownloadPct: 0,
     exporting: false,
+    playAfterExport: false,
+    kreaderSync: false,
     chatDomDirty: false,          // chat DOM changed since last wrap
     speakEndIdx: null,            // when set, stop reading at this word index
     _voxDomUpdate: false,         // true while wrap/unwrap mutates the page
@@ -91,7 +93,7 @@
     chrome.storage.sync.get([
       'speed','voiceName','shortcuts','highlightWord','highlightSentence',
       'sentenceStyle','wordColor','sentenceHex',
-      'voiceEngine','kokoroVoice',
+      'voiceEngine','kokoroVoice','kreaderSync',
     ], (p) => {
       if (p.speed != null) S.speed = p.speed;
       if (p.voiceName) S.selectedVoiceName = p.voiceName;
@@ -104,6 +106,7 @@
       if (p.voiceEngine) S.voiceEngine = p.voiceEngine;
       const knownVoice = KOKORO_VOICES.some(v => v.id === p.kokoroVoice);
       S.kokoroVoice = knownVoice ? p.kokoroVoice : DEFAULT_KOKORO_VOICE;
+      if (p.kreaderSync != null) S.kreaderSync = !!p.kreaderSync;
       cb();
     });
   }
@@ -117,6 +120,7 @@
         sentenceHex: S.sentenceHex,
         voiceEngine: S.voiceEngine,
         kokoroVoice: S.kokoroVoice,
+        kreaderSync: S.kreaderSync,
       });
     } catch(e) { /* extension reloaded mid-session, ignore */ }
   }
@@ -135,6 +139,12 @@
       kokoroCacheVersion: chrome.runtime.getManifest().version,
     });
   }
+  function setKreaderSync(enabled) {
+    S.kreaderSync = !!enabled;
+    savePrefs();
+    window.dispatchEvent(new CustomEvent('vox-kreader-sync', { detail: { enabled: S.kreaderSync } }));
+  }
+
   function invalidateKokoroCache() {
     S.kokoroModelCached = false;
     chrome.storage.local.remove(['kokoroModelCached', 'kokoroCacheVersion']);
@@ -1517,6 +1527,15 @@
             </div>
           </div>
 
+          <!-- KReader sync (optional, off by default) -->
+          <div class="vs">
+            <div class="vs-hl-toggle-pair">
+              <span>KReader sync</span>
+              <button class="vs-toggle ${S.kreaderSync?'on':''}" id="tog-kreader" role="switch" aria-checked="${S.kreaderSync}" aria-label="KReader highlight sync"></button>
+            </div>
+            <p class="vs-kokoro-info">Sync highlights with local KReader app on 127.0.0.1:8766</p>
+          </div>
+
           <!-- Export + status on same row -->
           <div class="vs vs-bottom-row">
             <button class="vs-export-btn" id="exp-pdf" title="Print this page">Print</button>
@@ -1554,6 +1573,7 @@
     startChatObserver();
     syncEngineUI();
     syncPrintUI();
+    window.dispatchEvent(new CustomEvent('vox-kreader-sync', { detail: { enabled: S.kreaderSync } }));
     if (S.voiceEngine === 'kokoro' && !S.kokoroModelCached) {
       startKokoroDownload();
     } else {
@@ -1573,6 +1593,11 @@
 
     document.getElementById('vox-playpause-bar').onclick = async () => {
       if (!S.speaking && !S.paused) {
+        if (S.exporting) {
+          S.playAfterExport = true;
+          setStatus('Will play when export finishes…', true);
+          return;
+        }
         const captured = _capturedSel; _capturedSel = null;
         if (captured) {
           readSelection(captured.text).catch(() => {});
@@ -1685,6 +1710,13 @@
       e.target.classList.toggle('on', S.highlightSentence);
       e.target.setAttribute('aria-checked', String(S.highlightSentence));
       savePrefs();
+    };
+    document.getElementById('tog-kreader').onclick = (e) => {
+      const next = !S.kreaderSync;
+      e.target.classList.toggle('on', next);
+      e.target.setAttribute('aria-checked', String(next));
+      setKreaderSync(next);
+      setStatus(next ? 'KReader sync on' : 'KReader sync off');
     };
 
     document.getElementById('hl-bg').onclick = () => {
@@ -1877,11 +1909,16 @@
       S.exporting = false;
       syncExportUI();
       setStatus(`Saved ${msg.filename || 'export.wav'}`);
+      if (S.playAfterExport) {
+        S.playAfterExport = false;
+        setTimeout(() => document.getElementById('vox-playpause-bar')?.click(), 150);
+      }
       return;
     }
 
     if (msg.action === 'kokoro_export_error') {
       S.exporting = false;
+      S.playAfterExport = false;
       syncExportUI();
       setStatus('Export error: ' + (msg.error || 'unknown'));
       return;

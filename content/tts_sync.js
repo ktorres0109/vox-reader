@@ -1,36 +1,42 @@
-// KReader sync — Speechify-style in-page highlighting for the local
-// KReader (tts-reader) mac app. Runs alongside Vox Reader's own TTS:
-// this script only activates while the local app is reading (polls
-// 127.0.0.1:8766/state) and stays dormant otherwise.
-//
-// Polls the local app (127.0.0.1:8766/state) for the sentence + word being
-// spoken, finds that sentence in this page's text nodes, and paints native
-// DOM highlights that scroll into view. One-way: position comes in, nothing
-// about the page is ever sent out (the request carries no body or query).
+// KReader sync — optional highlight sync for the local KReader mac app.
+// Disabled by default; enable in Vox Reader Settings → KReader sync.
 
 (() => {
+  if (window.__voxKreaderSyncLoaded) return;
+  window.__voxKreaderSyncLoaded = true;
+
   const ENDPOINT = "http://127.0.0.1:8766/state";
   const POLL_ACTIVE_MS = 200;
   const PROBE_INTERVAL_MS = 30000;
   const PROBE_TIMEOUT_MS = 1500;
+  const SYNC_EVENT = "vox-kreader-sync";
 
-  const style = document.createElement("style");
-  style.textContent = `
-    .ttsr-sent { background: rgba(108, 93, 211, 0.16); border-radius: 3px; }
-    .ttsr-word { background: rgba(108, 93, 211, 0.85); color: #fff;
-                 border-radius: 3px; }
-  `;
-  document.documentElement.appendChild(style);
-
-  const norm = (s) => s.replace(/\s+/g, " ").trim().toLowerCase();
-
-  let pageMap = null;      // { text, nodes: [{node, start}] } lazily built
+  let styleEl = null;
+  let active = false;
+  let appAvailable = false;
+  let timer = null;
+  let pageMap = null;
   let lastSeq = -1;
   let lastSentence = "";
   let lastSpan = "";
-  let marked = [];         // wrapped <span>s to unwrap on change
-  let appAvailable = false;
-  let timer = null;
+  let marked = [];
+
+  const norm = (s) => s.replace(/\s+/g, " ").trim().toLowerCase();
+
+  function ensureStyle() {
+    if (styleEl) return;
+    styleEl = document.createElement("style");
+    styleEl.textContent = `
+      .ttsr-sent { background: rgba(108, 93, 211, 0.16); border-radius: 3px; }
+      .ttsr-word { background: rgba(108, 93, 211, 0.85); color: #fff;
+                   border-radius: 3px; }
+    `;
+    document.documentElement.appendChild(styleEl);
+  }
+
+  function removeStyle() {
+    if (styleEl) { styleEl.remove(); styleEl = null; }
+  }
 
   function buildPageMap() {
     const walker = document.createTreeWalker(
@@ -100,7 +106,7 @@
       range.surroundContents(span);
       marked.push(span);
       return span;
-    } catch (e) {
+    } catch (_) {
       return null;
     }
   }
@@ -147,15 +153,17 @@
   }
 
   function scheduleProbe() {
-    if (timer) return;
+    if (!active || timer) return;
     timer = setTimeout(async () => {
       timer = null;
+      if (!active) return;
       if (await probeApp()) poll();
       else scheduleProbe();
     }, PROBE_INTERVAL_MS);
   }
 
   async function poll() {
+    if (!active) return;
     let delay = POLL_ACTIVE_MS;
     try {
       const r = await fetch(ENDPOINT, { cache: "no-store" });
@@ -170,18 +178,41 @@
       scheduleProbe();
       return;
     }
-    timer = setTimeout(poll, delay);
+    if (active) timer = setTimeout(poll, delay);
+  }
+
+  function stop() {
+    active = false;
+    if (timer) { clearTimeout(timer); timer = null; }
+    clearMarks();
+    removeStyle();
+    appAvailable = false;
+    lastSeq = -1;
   }
 
   async function start() {
+    if (active) return;
+    active = true;
+    ensureStyle();
     if (await probeApp()) poll();
     else scheduleProbe();
   }
 
-  start();
+  function setEnabled(enabled) {
+    if (enabled) start();
+    else stop();
+  }
+
+  window.addEventListener(SYNC_EVENT, (e) => {
+    setEnabled(!!e.detail?.enabled);
+  });
 
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState !== "visible" || appAvailable || timer) return;
-    probeApp().then((ok) => { if (ok && !timer) poll(); });
+    if (!active || document.visibilityState !== "visible" || appAvailable || timer) return;
+    probeApp().then((ok) => { if (ok && active && !timer) poll(); });
+  });
+
+  chrome.storage.sync.get({ kreaderSync: false }, (prefs) => {
+    if (prefs.kreaderSync) start();
   });
 })();

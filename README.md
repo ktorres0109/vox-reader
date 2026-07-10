@@ -19,24 +19,28 @@ Vox Reader is a free Chrome extension that highlights words and sentences as it 
 | Offline | Works after one-time model download | Requires internet |
 | Highlighting | Word + sentence sync | Rarely built-in |
 | Chat threads | Reads full assistant conversations | N/A |
+| Export | Download WAV (Kokoro) | Rarely built-in |
 
 ---
 
 ## Features
 
-- **Bella AI voice (default)** — Kokoro 82M neural TTS; switch to Sarah, Sky, Nicole, Adam, Michael, and more
+- **Bella AI voice (default)** — Kokoro 82M neural TTS; American + British voices
+- **WAV export** — download narration as `vox-reader-{voice}.wav` (Kokoro engine)
 - **Word-by-word highlighting** synced to speech
 - **Sentence highlighting** — background fill or underline, custom colors
-- **Chat-aware reading** — ChatGPT, Claude, Gemini, Perplexity; reads all assistant replies in order
+- **Chat-aware reading** — ChatGPT, Claude, Gemini; all assistant replies in order
+- **Live chat sync** — re-anchors highlights while responses stream in
 - **Code blocks** — reads `<pre>` / `<code>` content aloud
 - **Classic system voices** — instant, no download (macOS / Windows / Linux)
 - **Floating player** — draggable bar with scrubbable progress, skip ±15 words
-- **Immersive reader** — distraction-free full-screen view
-- **Selection reading** — highlight text → Alt+R
+- **Immersive reader** — distraction-free view; **Print** outputs clean reader text
+- **Selection reading** — popup, context menu, or **Alt+R**
 - **Click-to-jump** — click any word while playing to seek
-- **Speed control** — 0.5× to 3.0×
-- **Keyboard shortcuts** — fully customizable
+- **Speed control** — 0.5× to 3.0× (Kokoro + Classic)
+- **Keyboard shortcuts** — fully customizable; **Alt+P** works before opening player
 - **Settings sync** — preferences follow you via Chrome Sync
+- **KReader sync** (optional) — highlight sync with local KReader mac app
 - **Accessible** — ARIA labels, live regions, focus indicators
 
 ---
@@ -45,32 +49,29 @@ Vox Reader is a free Chrome extension that highlights words and sentences as it 
 
 ### 1. Install dependencies (one time)
 
-The extension bundles the Kokoro runtime library locally. Run this once after cloning:
-
 ```bash
 bash tools/fetch-deps.sh
+# or: npm run fetch-deps
 ```
 
-This downloads `kokoro.web.js` and ONNX Runtime WASM files into `vendor/` (~25 MB).
+Downloads `kokoro.web.js` and ONNX Runtime WASM into `vendor/` (~25 MB).
 
 ### 2. Load in Chrome
 
 1. Open `chrome://extensions`
 2. Enable **Developer mode**
-3. Click **Load unpacked** → select this repo folder
+3. **Load unpacked** → select this repo folder
 4. Pin **Vox Reader** to your toolbar
 
 > **Requires Chrome 116+** for offscreen AI voice synthesis.
 
 ### 3. First use — AI voice download
 
-On first open, Vox Reader downloads the **Kokoro 82M model** (~86 MB) from HuggingFace. This happens once per device and is cached for offline use.
+On first open, Vox Reader downloads the **Kokoro 82M model** (~86 MB) from HuggingFace once per device.
 
-1. Click the extension icon → **Open Player on Page**
-2. Wait for the download progress bar to reach 100%
-3. Press **▶ Play** — Bella reads the page
-
-You can change voice anytime in **⚙ Settings → AI Neural**.
+1. Extension icon → **Open Player on Page**
+2. Wait for download progress to reach 100%
+3. Press **▶ Play**
 
 ---
 
@@ -79,115 +80,36 @@ You can change voice anytime in **⚙ Settings → AI Neural**.
 | Action | How |
 |--------|-----|
 | Open player | Extension icon → **Open Player on Page** |
-| Read selection | Highlight text → **▶ Read Selected Text** in popup, right-click → **Read selection with Vox Reader**, or **Alt+R** |
-| Play page | Press **▶** in the floating player |
+| Read selection | Popup **▶ Read Selected Text**, right-click menu, or **Alt+R** |
+| Play page | **▶** in the floating player (or **Alt+P** — opens player if needed) |
 | Pause / resume | **▶** again or **Alt+P** |
 | Stop | **Alt+S** |
-| Jump to word | Click a highlighted word while playing |
-| Scrub | Drag the progress bar |
-| Skip | **↺ −15** / **↻ +15** word buttons |
-| Immersive mode | **☰** — clean reading view |
-| Settings | **⚙** — speed, voice, highlights, shortcuts |
+| Export WAV | **Export** button (Kokoro engine, after model loads) |
+| Print | **Print** — reader view in immersive mode, full page otherwise |
+| Immersive mode | **☰** |
+| Settings | **⚙** |
 
-## Read selected text
-
-Three ways to read only what you've highlighted:
-
-1. **Extension popup** — select text on the page → click the Vox icon → **▶ Read Selected Text**
-2. **Right-click** — select text → **Read selection with Vox Reader**
-3. **Keyboard** — select text → **Alt+R** (with the player open on the page)
-
-Selection reading wraps and highlights only the chosen passage — it won't continue into the rest of the page.
+Long chat threads (4+ messages) prompt before scrolling full history to load virtualized messages.
 
 ---
 
-### AI Neural (Kokoro 82M) — default
+## Voices (Kokoro 82M)
 
 | Voice | ID | Notes |
 |-------|-----|-------|
-| **Bella** | `af_bella` | **Default** — warm, natural female |
-| Sarah | `af_sarah` | Clear female |
-| Sky | `af_sky` | Light female |
+| **Bella** | `af_bella` | **Default** — warm American female |
+| Sarah | `af_sarah` | American female |
+| Sky | `af_sky` | American female |
 | Nicole | `af_nicole` | Headphone-optimized female |
 | Heart | `af_heart` | Highest-rated female |
-| Adam | `am_adam` | Male |
-| Michael | `am_michael` | Male |
+| Adam | `am_adam` | American male |
+| Michael | `am_michael` | American male |
+| Emma | `bf_emma` | British female |
+| Isabella | `bf_isabella` | British female |
+| George | `bm_george` | British male |
+| Lewis | `bm_lewis` | British male |
 
-Speed applies to both AI Neural and Classic engines.
-
-### Classic system voices
-
-Instant playback, no download. Quality depends on your OS:
-
-- **macOS** — Samantha, Ava, Serena (excellent with premium voices installed)
-- **Windows** — Zira, Aria
-- **Linux** — eSpeak (basic)
-
-Install premium voices: **System Settings → Accessibility → Spoken Content** (macOS).
-
-Switch engines in **⚙ Settings → Classic / AI Neural**.
-
----
-
-## Works great on
-
-- Articles, blogs, documentation, Wikipedia
-- **ChatGPT** — full assistant conversation threads
-- **Claude** — all responses in a chat
-- **Gemini** — including shadow-DOM message content
-- Perplexity, Notion, SPAs (React, Next.js)
-
-For long chat histories, Vox scrolls the conversation pane to load virtualized messages before reading.
-
----
-
-## Keyboard shortcuts
-
-Defaults (customizable in Settings):
-
-| Shortcut | Action |
-|----------|--------|
-| `Alt+P` | Play / Pause |
-| `Alt+S` | Stop |
-| `Alt+R` | Read selected text |
-
----
-
-## Project structure
-
-```
-vox-reader/
-├── background/       # Service worker (message routing, offscreen lifecycle)
-├── content/          # In-page player, highlighting, chat detection
-├── offscreen/        # Kokoro TTS synthesis (isolated from page)
-├── popup/            # Toolbar popup
-├── tools/
-│   └── fetch-deps.sh # Download kokoro-js + WASM (run once)
-└── vendor/           # Generated — not committed (see .gitignore)
-```
-
----
-
-## Privacy
-
-**This extension does not collect, transmit, or store any personal data.**
-
-- All speech synthesis runs locally in your browser
-- Settings sync via your Chrome account (`chrome.storage.sync`) — Google's standard sync
-- **AI Neural only:** Kokoro model weights (~86 MB) download from HuggingFace's public CDN on first use. No user text is ever uploaded — only model files
-- No analytics, no tracking, no accounts
-
----
-
-## Troubleshooting
-
-| Problem | Fix |
-|---------|-----|
-| AI voice stuck on "Downloading…" | Check internet; reload extension; toggle Classic → AI Neural in Settings |
-| Play button disabled | Wait for Kokoro download to finish (progress bar) |
-| Only reads last chat reply | Update to latest version — reads all assistant messages |
-| `kokoro.web.js` missing | Run `bash tools/fetch-deps.sh` and reload extension |
-| No sound | Check system volume; try Classic voice to isolate issue |
+Classic system voices are available under **Settings → Classic** (no download).
 
 ---
 
@@ -196,11 +118,50 @@ vox-reader/
 ```bash
 git clone https://github.com/ktorres0109/vox-reader.git
 cd vox-reader
-bash tools/fetch-deps.sh
-# Load unpacked in chrome://extensions
+npm run fetch-deps
+npm test          # unit tests (WAV encoder, sentences, manifest)
 ```
 
-After changing `content/` or `offscreen/` code, click **Reload** on `chrome://extensions` and refresh the target page.
+CI runs `npm test` on every push/PR (GitHub Actions).
+
+After changing extension code, **Reload** on `chrome://extensions` and refresh the target page.
+
+### Project structure
+
+```
+vox-reader/
+├── background/       # Service worker, downloads, offscreen routing
+├── content/          # Player, highlighting, chat detection
+├── offscreen/        # Kokoro synthesis + WAV encoder
+├── popup/            # Toolbar popup
+├── tools/
+│   ├── fetch-deps.sh
+│   └── run-tests.sh
+└── vendor/           # Generated — run fetch-deps.sh
+```
+
+---
+
+## Privacy
+
+- All speech synthesis runs locally
+- Settings sync via Chrome (`chrome.storage.sync`)
+- Kokoro model weights download from HuggingFace on first use — no user text uploaded
+- KReader sync (off by default) polls `127.0.0.1:8766` only when enabled
+- No analytics or tracking
+
+---
+
+## Troubleshooting
+
+| Problem | Fix |
+|---------|-----|
+| AI voice stuck downloading | Check internet; reload extension; try Classic engine |
+| Play disabled | Wait for Kokoro download (progress bar) |
+| Only last chat reply read | Update extension — reads all assistant messages |
+| `kokoro.web.js` missing | `bash tools/fetch-deps.sh` |
+| Export fails | Try shorter selection; check Downloads permission |
+| KReader highlights | Enable **Settings → KReader sync** |
 
 ---
 
