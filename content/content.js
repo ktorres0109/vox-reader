@@ -1480,36 +1480,27 @@
         setStatus(`Export capped at ${MAX_EXPORT_WORDS} words`, true);
       }
 
-      if (S.voiceEngine === 'kokoro' || S.kokoroModelCached) {
-        if (!S.kokoroModelCached) {
-          setStatus('AI voice must finish downloading first', true);
-          return;
-        }
+      if (!S.kokoroModelCached) {
         if (S.exporting) return;
-        if (S.speaking && !S.paused) {
-          S.pendingExport = true;
-          setStatus('Will export when playback finishes…', true);
-          return;
+        S.pendingExport = true;
+        if (!S.kokoroLoading) {
+          setStatus('Downloading AI voice for export (one-time)…', true);
+          startKokoroDownload();
+        } else {
+          setStatus('Will export when AI voice finishes downloading…', true);
         }
-        if (S.speaking || S.paused) stop(false);
-        runKokoroFileExport(startIdx, endIdx);
+        syncExportUI();
         return;
       }
 
-      const text = S.words.slice(startIdx, endIdx + 1).map(w => w.text).join(' ');
-      if (!text) {
-        setStatus('Nothing to export');
+      if (S.exporting) return;
+      if (S.speaking && !S.paused) {
+        S.pendingExport = true;
+        setStatus('Will export when playback finishes…', true);
         return;
       }
-      setStatus('Previewing speech (classic voice)…', true);
-      const u = new SpeechSynthesisUtterance(text);
-      u.rate = S.speed; if (S.voice) u.voice = S.voice;
-      u.onend = () => {
-        setStatus('Preview done');
-        maybeRunPendingExport();
-      };
-      window.speechSynthesis.speak(u);
-      return;
+      if (S.speaking || S.paused) stop(false);
+      runKokoroFileExport(startIdx, endIdx);
     };
     if (!S.words.length) { rewrap(doExport); return; }
     doExport();
@@ -1530,25 +1521,21 @@
     const canFile = S.kokoroModelCached;
     const ext = S.exportFormat === 'mp3' ? 'MP3' : 'WAV';
     const scopeLabel = S.exportScope === 'selection' ? 'selection' : S.exportScope === 'here' ? 'from here' : 'full page';
-    if (S.voiceEngine === 'kokoro' || canFile) {
-      btn.textContent = 'Export';
-      btn.title = canFile
-        ? `Download ${ext} (${scopeLabel})`
-        : 'AI voice must finish downloading first';
-      btn.disabled = !canFile || S.exporting;
-      if (fmt) fmt.disabled = !canFile || S.exporting;
-      if (scope) scope.disabled = !canFile || S.exporting;
-      if (bitrate) {
-        bitrate.disabled = !canFile || S.exporting || S.exportFormat !== 'mp3';
-        bitrate.classList.toggle('vs-hidden', S.exportFormat !== 'mp3');
-      }
+    btn.textContent = 'Export';
+    if (canFile) {
+      btn.title = `Download ${ext} (${scopeLabel})`;
+      btn.disabled = S.exporting;
     } else {
-      btn.textContent = 'Preview';
-      btn.title = 'Preview with classic voice — enable AI voice in Settings for file download';
-      btn.disabled = false;
-      if (fmt) fmt.disabled = true;
-      if (scope) scope.disabled = false;
-      if (bitrate) bitrate.classList.add('vs-hidden');
+      btn.title = S.kokoroLoading || S.pendingExport
+        ? 'Downloading AI voice for export…'
+        : `Download ${ext} — one-time AI voice download on first export`;
+      btn.disabled = S.exporting;
+    }
+    if (fmt) fmt.disabled = S.exporting;
+    if (scope) scope.disabled = S.exporting;
+    if (bitrate) {
+      bitrate.disabled = S.exporting || S.exportFormat !== 'mp3';
+      bitrate.classList.toggle('vs-hidden', S.exportFormat !== 'mp3');
     }
   }
 
@@ -2164,12 +2151,17 @@
         setKokoroUIState('ready');
         updateKokoroInstallProgress(100, '', 'Download complete');
         setStatus('AI voice ready — press Play', true);
+      } else if (S.pendingExport) {
+        setStatus('AI voice ready — starting export…', true);
       }
+      maybeRunPendingExport();
       return;
     }
 
     if (msg.action === 'kokoro_progress') {
-      if (S.voiceEngine === 'kokoro') {
+      if (S.pendingExport) {
+        setStatus(`Downloading for export… ${msg.pct || 0}%`, true);
+      } else if (S.voiceEngine === 'kokoro') {
         updateKokoroInstallProgress(msg.pct || 0, msg.file, msg.status);
       }
       return;
