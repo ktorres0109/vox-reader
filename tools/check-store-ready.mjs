@@ -22,7 +22,7 @@ for (const size of [16, 48, 128]) {
   assert.ok(fs.statSync(icon).size > 0, `icons/icon${size}.png is empty`);
 }
 
-for (const doc of ['docs/privacy.html', 'docs/index.html', 'STORE_LISTING.md', 'PRIVACY.md']) {
+for (const doc of ['docs/privacy.html', 'docs/index.html', 'STORE_LISTING.md', 'PRIVACY.md', 'LICENSE']) {
   assert.ok(fs.existsSync(path.join(root, doc)), `missing ${doc}`);
 }
 
