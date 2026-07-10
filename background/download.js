@@ -7,9 +7,9 @@ function base64ToUint8Array(b64) {
   return bytes;
 }
 
-function downloadWavBlob(bytes, filename) {
+function downloadAudioBlob(bytes, filename, mimeType = 'application/octet-stream') {
   return new Promise((resolve, reject) => {
-    const blob = new Blob([bytes], { type: 'audio/wav' });
+    const blob = new Blob([bytes], { type: mimeType });
     const url = URL.createObjectURL(blob);
     chrome.downloads.download({ url, filename, saveAs: false }, (id) => {
       if (chrome.runtime.lastError || id === undefined) {
@@ -21,4 +21,8 @@ function downloadWavBlob(bytes, filename) {
       resolve(id);
     });
   });
+}
+
+function downloadWavBlob(bytes, filename) {
+  return downloadAudioBlob(bytes, filename, 'audio/wav');
 }

@@ -20,6 +20,7 @@ const required = [
   'offscreen/offscreen.js',
   'offscreen/offscreen.html',
   'offscreen/wav.js',
+  'offscreen/mp3.js',
   'popup/popup.html',
   'popup/popup.js',
   'tools/fetch-deps.sh',
@@ -31,8 +32,12 @@ for (const file of required) {
 }
 
 const optionalVendor = path.join(root, 'vendor/kokoro.web.js');
+const optionalLame = path.join(root, 'vendor/lame.min.js');
 if (!fs.existsSync(optionalVendor)) {
   console.warn('validate-extension: vendor/kokoro.web.js missing — run npm run fetch-deps');
+}
+if (!fs.existsSync(optionalLame)) {
+  console.warn('validate-extension: vendor/lame.min.js missing — run npm run fetch-deps');
 }
 
 console.log(`validate-extension.mjs: ok (v${manifest.version})`);

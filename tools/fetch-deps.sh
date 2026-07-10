@@ -28,6 +28,15 @@ curl -#L "$WASM_BASE/ort-wasm-simd-threaded.jsep.wasm" -o "$VENDOR/ort-wasm-simd
 curl -#L "$WASM_BASE/ort.bundle.min.mjs"               -o "$VENDOR/ort.bundle.min.mjs" 2>/dev/null || true
 
 echo ""
+echo "Downloading lamejs MP3 encoder..."
+curl -#L "https://cdn.jsdelivr.net/npm/lamejs@1.2.1/lame.min.js" \
+  -o "$VENDOR/lame.min.js"
+
+echo ""
+echo "Done! Saved to vendor/lame.min.js"
+echo "Size: $(du -h "$VENDOR/lame.min.js" | cut -f1)"
+
+echo ""
 echo "Done! WASM files saved to vendor/"
 echo ""
 echo "The Kokoro 82M model (~86MB) and voice files download automatically"

@@ -2,7 +2,8 @@
 // Uses kokoro-js for multi-voice synthesis (Bella, Sarah, etc.)
 
 import { KokoroTTS } from '../vendor/kokoro.web.js';
-import { encodeWav, wavToBase64 } from './wav.js';
+import { encodeWav, bytesToBase64 } from './wav.js';
+import { encodeMp3 } from './mp3.js';
 
 const MODEL_ID = 'onnx-community/Kokoro-82M-v1.0-ONNX';
 
@@ -236,7 +237,7 @@ function resumePlayback() {
   runSentenceLoop(sentences, tabId, gen, speed, voice, sentenceIndex, offsetSec);
 }
 
-async function exportWav(sentences, tabId, speed, voice, exportGen, filename) {
+async function exportAudio(sentences, tabId, speed, voice, exportGen, filename, format = 'wav') {
   if (!tts) {
     await loadModel(tabId, voice);
   }
@@ -278,12 +279,15 @@ async function exportWav(sentences, tabId, speed, voice, exportGen, filename) {
       pos += chunk.length;
     }
 
-    const wav = encodeWav(merged, sr);
+    const useMp3 = format === 'mp3';
+    const audioBuffer = useMp3 ? encodeMp3(merged, sr) : encodeWav(merged, sr);
+    const ext = useMp3 ? 'mp3' : 'wav';
     send({
       action: 'kokoro_export_ready',
       tabId,
-      wavBase64: wavToBase64(wav),
-      filename: filename || 'vox-reader-export.wav',
+      audioBase64: bytesToBase64(audioBuffer),
+      mimeType: useMp3 ? 'audio/mpeg' : 'audio/wav',
+      filename: filename || `vox-reader-export.${ext}`,
     });
   } catch (err) {
     if (exportGen === exportGeneration) {
@@ -360,7 +364,7 @@ chrome.runtime.onMessage.addListener((msg) => {
     clearLoopState();
     const exportGen = ++exportGeneration;
     if (msg.voice) currentVoice = msg.voice;
-    exportWav(msg.sentences, msg.tabId, msg.speed || 1.0, msg.voice, exportGen, msg.filename)
+    exportAudio(msg.sentences, msg.tabId, msg.speed || 1.0, msg.voice, exportGen, msg.filename, msg.format || 'wav')
       .catch((err) => send({ action: 'kokoro_export_error', error: err.message, tabId: msg.tabId }));
     return;
   }

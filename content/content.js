@@ -88,6 +88,7 @@
     kokoroVoice: DEFAULT_KOKORO_VOICE,
     kokoroDownloadPct: 0,
     exporting: false,
+    exportFormat: 'mp3',
     playAfterExport: false,
     kreaderSync: false,
     chatDomDirty: false,          // chat DOM changed since last wrap
@@ -123,7 +124,7 @@
     chrome.storage.sync.get([
       'speed','voiceName','shortcuts','highlightWord','highlightSentence',
       'sentenceStyle','wordColor','sentenceHex',
-      'voiceEngine','kokoroVoice','kreaderSync',
+      'voiceEngine','kokoroVoice','kreaderSync','exportFormat',
     ], (p) => {
       if (p.speed != null) S.speed = p.speed;
       if (p.voiceName) S.selectedVoiceName = p.voiceName;
@@ -137,6 +138,7 @@
       const knownVoice = KOKORO_VOICES.some(v => v.id === p.kokoroVoice);
       S.kokoroVoice = knownVoice ? p.kokoroVoice : DEFAULT_KOKORO_VOICE;
       if (p.kreaderSync != null) S.kreaderSync = !!p.kreaderSync;
+      if (p.exportFormat === 'wav' || p.exportFormat === 'mp3') S.exportFormat = p.exportFormat;
       cb();
     });
   }
@@ -151,6 +153,7 @@
         voiceEngine: S.voiceEngine,
         kokoroVoice: S.kokoroVoice,
         kreaderSync: S.kreaderSync,
+        exportFormat: S.exportFormat,
       });
     } catch(e) { /* extension reloaded mid-session, ignore */ }
   }
@@ -1366,9 +1369,18 @@
           return;
         }
         S.exporting = true;
-        const filename = `vox-reader-${S.kokoroVoice || 'kokoro'}.wav`;
-        setStatus('Generating WAV… 0%', true);
-        sendMsg({ action: 'kokoro_export', sentences, speed: S.speed, voice: S.kokoroVoice, filename });
+        const ext = S.exportFormat === 'mp3' ? 'mp3' : 'wav';
+        const filename = `vox-reader-${S.kokoroVoice || 'kokoro'}.${ext}`;
+        const label = ext.toUpperCase();
+        setStatus(`Generating ${label}… 0%`, true);
+        sendMsg({
+          action: 'kokoro_export',
+          sentences,
+          speed: S.speed,
+          voice: S.kokoroVoice,
+          filename,
+          format: S.exportFormat,
+        });
         return;
       }
 
@@ -1389,17 +1401,22 @@
 
   function syncExportUI() {
     const btn = document.getElementById('exp-mp3');
+    const fmt = document.getElementById('export-format');
+    if (fmt) fmt.value = S.exportFormat;
     if (!btn) return;
     if (S.voiceEngine === 'kokoro') {
+      const ext = S.exportFormat === 'mp3' ? 'MP3' : 'WAV';
       btn.textContent = 'Export';
       btn.title = S.kokoroModelCached
-        ? 'Download WAV file (Kokoro voice)'
+        ? `Download ${ext} file (Kokoro voice)`
         : 'AI voice must finish downloading first';
       btn.disabled = !S.kokoroModelCached || S.exporting;
+      if (fmt) fmt.disabled = !S.kokoroModelCached || S.exporting;
     } else {
       btn.textContent = 'Preview';
       btn.title = 'Preview with classic voice (not a file download)';
       btn.disabled = false;
+      if (fmt) fmt.disabled = true;
     }
   }
 
@@ -1607,7 +1624,11 @@
           <!-- Export + status on same row -->
           <div class="vs vs-bottom-row">
             <button class="vs-export-btn" id="exp-pdf" title="Print this page">Print</button>
-            <button class="vs-export-btn" id="exp-mp3" title="Download WAV (Kokoro) or preview (classic)">Export</button>
+            <select id="export-format" class="vs-export-format" aria-label="Export format" title="Export format">
+              <option value="mp3" ${S.exportFormat==='mp3'?'selected':''}>MP3</option>
+              <option value="wav" ${S.exportFormat==='wav'?'selected':''}>WAV</option>
+            </select>
+            <button class="vs-export-btn" id="exp-mp3" title="Download audio (Kokoro) or preview (classic)">Export</button>
             <span id="vox-status" role="status" aria-live="polite">Ready</span>
           </div>
 
@@ -1827,6 +1848,11 @@
 
     document.getElementById('exp-pdf').onclick = () => printReadable();
     document.getElementById('exp-mp3').onclick = exportAudio;
+    document.getElementById('export-format').onchange = (e) => {
+      S.exportFormat = e.target.value === 'wav' ? 'wav' : 'mp3';
+      savePrefs();
+      syncExportUI();
+    };
 
     // Click-to-jump (only while speaking/paused)
     document.addEventListener('click', (e) => {
@@ -1968,7 +1994,10 @@
     }
 
     if (msg.action === 'kokoro_export_progress') {
-      if (S.exporting) setStatus(`Generating WAV… ${msg.pct || 0}%`, true);
+      if (S.exporting) {
+        const label = S.exportFormat === 'mp3' ? 'MP3' : 'WAV';
+        setStatus(`Generating ${label}… ${msg.pct || 0}%`, true);
+      }
       return;
     }
 

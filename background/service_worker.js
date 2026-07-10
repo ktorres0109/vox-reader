@@ -196,9 +196,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === 'kokoro_export_ready') {
     const filename = msg.filename || 'vox-reader-export.wav';
     const tabId = msg.tabId;
+    const mimeType = msg.mimeType || 'audio/wav';
+    const audioB64 = msg.audioBase64 || msg.wavBase64;
     try {
-      const bytes = base64ToUint8Array(msg.wavBase64);
-      downloadWavBlob(bytes, filename)
+      const bytes = base64ToUint8Array(audioB64);
+      downloadAudioBlob(bytes, filename, mimeType)
         .then(() => {
           if (tabId) {
             chrome.tabs.sendMessage(tabId, { action: 'kokoro_export_done', filename, tabId }).catch(() => {});
