@@ -1262,19 +1262,6 @@
   // ── Audio export ───────────────────────────────────────────────────────────
   const MAX_EXPORT_WORDS = 2500;
 
-  function downloadWavBase64(wavBase64, filename = 'vox-reader-export.wav') {
-    const bin = atob(wavBase64);
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    const blob = new Blob([bytes], { type: 'audio/wav' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-
   function exportAudio() {
     const doExport = () => {
       const startIdx = 0;
@@ -1301,8 +1288,9 @@
           return;
         }
         S.exporting = true;
+        const filename = `vox-reader-${S.kokoroVoice || 'kokoro'}.wav`;
         setStatus('Generating WAV… 0%', true);
-        sendMsg({ action: 'kokoro_export', sentences, speed: S.speed, voice: S.kokoroVoice });
+        sendMsg({ action: 'kokoro_export', sentences, speed: S.speed, voice: S.kokoroVoice, filename });
         return;
       }
 
@@ -1885,15 +1873,10 @@
       return;
     }
 
-    if (msg.action === 'kokoro_export_ready') {
+    if (msg.action === 'kokoro_export_done') {
       S.exporting = false;
       syncExportUI();
-      try {
-        downloadWavBase64(msg.wavBase64, `vox-reader-${S.kokoroVoice || 'kokoro'}.wav`);
-        setStatus('WAV downloaded');
-      } catch (e) {
-        setStatus('Export failed — file too large?');
-      }
+      setStatus(`Saved ${msg.filename || 'export.wav'}`);
       return;
     }
 

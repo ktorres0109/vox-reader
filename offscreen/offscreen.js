@@ -12,6 +12,7 @@ let currentSource = null;
 let isPlaying = false;
 let generation = 0;
 let exportGeneration = 0;
+let exportInProgress = false;
 let modelLoadingPromise = null;
 let currentVoice = 'af_bella'; // Bella — default Kokoro voice
 
@@ -167,54 +168,64 @@ async function runSentenceLoop(sentences, tabId, gen, speed = 1.0, voice) {
   }
 }
 
-async function exportWav(sentences, tabId, speed, voice, exportGen) {
+async function exportWav(sentences, tabId, speed, voice, exportGen, filename) {
   if (!tts) {
     await loadModel(tabId, voice);
   }
   if (exportGen !== exportGeneration) return;
 
+  exportInProgress = true;
   const sr = 24000;
   const chunks = [];
   let totalLen = 0;
 
-  for (let i = 0; i < sentences.length; i++) {
-    if (exportGen !== exportGeneration) {
-      send({ action: 'kokoro_export_error', tabId, error: 'Export cancelled' });
-      return;
+  try {
+    for (let i = 0; i < sentences.length; i++) {
+      if (exportGen !== exportGeneration) {
+        send({ action: 'kokoro_export_error', tabId, error: 'Export cancelled' });
+        return;
+      }
+
+      send({
+        action: 'kokoro_export_progress',
+        tabId,
+        pct: sentences.length ? Math.round((i / sentences.length) * 100) : 0,
+      });
+
+      const audio = await tts.generate(sentences[i].text, {
+        voice: voice || currentVoice,
+        speed: Math.max(0.5, Math.min(3.0, speed || 1)),
+      });
+      if (exportGen !== exportGeneration) {
+        send({ action: 'kokoro_export_error', tabId, error: 'Export cancelled' });
+        return;
+      }
+
+      chunks.push(audio.data);
+      totalLen += audio.data.length;
     }
 
+    const merged = new Float32Array(totalLen);
+    let pos = 0;
+    for (const chunk of chunks) {
+      merged.set(chunk, pos);
+      pos += chunk.length;
+    }
+
+    const wav = encodeWav(merged, sr);
     send({
-      action: 'kokoro_export_progress',
+      action: 'kokoro_export_ready',
       tabId,
-      pct: sentences.length ? Math.round((i / sentences.length) * 100) : 0,
+      wavBase64: wavToBase64(wav),
+      filename: filename || 'vox-reader-export.wav',
     });
-
-    const audio = await tts.generate(sentences[i].text, {
-      voice: voice || currentVoice,
-      speed: Math.max(0.5, Math.min(3.0, speed || 1)),
-    });
-    if (exportGen !== exportGeneration) {
-      send({ action: 'kokoro_export_error', tabId, error: 'Export cancelled' });
-      return;
+  } catch (err) {
+    if (exportGen === exportGeneration) {
+      send({ action: 'kokoro_export_error', error: err.message, tabId });
     }
-
-    chunks.push(audio.data);
-    totalLen += audio.data.length;
+  } finally {
+    if (exportGen === exportGeneration) exportInProgress = false;
   }
-
-  const merged = new Float32Array(totalLen);
-  let pos = 0;
-  for (const chunk of chunks) {
-    merged.set(chunk, pos);
-    pos += chunk.length;
-  }
-
-  const wav = encodeWav(merged, sr);
-  send({
-    action: 'kokoro_export_ready',
-    tabId,
-    wavBase64: wavToBase64(wav),
-  });
 }
 
 chrome.runtime.sendMessage({ action: 'offscreen_ready' }).catch(() => {});
@@ -238,6 +249,10 @@ chrome.runtime.onMessage.addListener((msg) => {
   }
 
   if (msg.action === 'kokoro_speak') {
+    if (exportInProgress) {
+      send({ action: 'kokoro_error', error: 'Export in progress — try again shortly', tabId: msg.tabId });
+      return;
+    }
     if (msg.voice) currentVoice = msg.voice;
     isPlaying = false;
     stopCurrentAudio();
@@ -266,7 +281,7 @@ chrome.runtime.onMessage.addListener((msg) => {
     stopCurrentAudio();
     const exportGen = ++exportGeneration;
     if (msg.voice) currentVoice = msg.voice;
-    exportWav(msg.sentences, msg.tabId, msg.speed || 1.0, msg.voice, exportGen)
+    exportWav(msg.sentences, msg.tabId, msg.speed || 1.0, msg.voice, exportGen, msg.filename)
       .catch((err) => send({ action: 'kokoro_export_error', error: err.message, tabId: msg.tabId }));
     return;
   }

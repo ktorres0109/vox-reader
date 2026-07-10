@@ -1,5 +1,7 @@
 // Vox Reader — background service worker
 
+importScripts('download.js');
+
 const CONTENT_FILES = ['content/content.js', 'content/tts_sync.js'];
 const CONTENT_CSS = ['content/content.css'];
 
@@ -47,12 +49,16 @@ let offscreenCreating = false;
 let kokoroActiveTabId = null;
 
 async function ensureOffscreen() {
-  const exists = await chrome.offscreen.hasDocument().catch(() => false);
-  if (exists) return;
+  if (await chrome.offscreen.hasDocument().catch(() => false)) return;
+
   if (offscreenCreating) {
-    await new Promise(r => setTimeout(r, 600));
+    for (let i = 0; i < 25; i++) {
+      await new Promise(r => setTimeout(r, 300));
+      if (await chrome.offscreen.hasDocument().catch(() => false)) return;
+    }
     return;
   }
+
   offscreenCreating = true;
   try {
     await chrome.offscreen.createDocument({
@@ -60,6 +66,10 @@ async function ensureOffscreen() {
       reasons: ['AUDIO_PLAYBACK'],
       justification: 'Kokoro 82M neural TTS synthesis and audio playback',
     });
+    for (let i = 0; i < 25; i++) {
+      if (await chrome.offscreen.hasDocument().catch(() => false)) return;
+      await new Promise(r => setTimeout(r, 300));
+    }
   } finally {
     offscreenCreating = false;
   }
@@ -174,13 +184,44 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     msg.action === 'kokoro_chunk'    || msg.action === 'kokoro_end'    ||
     msg.action === 'kokoro_error'    ||
     msg.action === 'kokoro_export_progress' ||
-    msg.action === 'kokoro_export_ready'    ||
     msg.action === 'kokoro_export_error'
   ) {
     if (msg.action === 'kokoro_end' && msg.tabId && kokoroActiveTabId === msg.tabId) {
       kokoroActiveTabId = null;
     }
     if (msg.tabId) chrome.tabs.sendMessage(msg.tabId, msg).catch(() => {});
+    return;
+  }
+
+  if (msg.action === 'kokoro_export_ready') {
+    const filename = msg.filename || 'vox-reader-export.wav';
+    const tabId = msg.tabId;
+    try {
+      const bytes = base64ToUint8Array(msg.wavBase64);
+      downloadWavBlob(bytes, filename)
+        .then(() => {
+          if (tabId) {
+            chrome.tabs.sendMessage(tabId, { action: 'kokoro_export_done', filename, tabId }).catch(() => {});
+          }
+        })
+        .catch((err) => {
+          if (tabId) {
+            chrome.tabs.sendMessage(tabId, {
+              action: 'kokoro_export_error',
+              error: err.message,
+              tabId,
+            }).catch(() => {});
+          }
+        });
+    } catch (err) {
+      if (tabId) {
+        chrome.tabs.sendMessage(tabId, {
+          action: 'kokoro_export_error',
+          error: err.message,
+          tabId,
+        }).catch(() => {});
+      }
+    }
     return;
   }
 });
