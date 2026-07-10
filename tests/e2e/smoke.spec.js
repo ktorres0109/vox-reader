@@ -407,6 +407,75 @@ test.describe('Vox Reader smoke', () => {
     }
   });
 
+  test('immersive reader opens and closes', async () => {
+    const launched = await launchWithExtension();
+    if (!launched) test.skip(true, 'Chrome extension host unavailable');
+    const { context } = launched;
+    try {
+      const page = await context.newPage();
+      await page.goto(`file://${fixturePage}`);
+      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.keyboard.press('Alt+p');
+      await page.locator('#vox-immersive-btn').click();
+      await expect(page.locator('#vox-immersive')).toBeVisible({ timeout: 8_000 });
+      await expect(page.locator('#vox-immersive-content .vox-word')).not.toHaveCount(0);
+      await page.locator('#vox-immersive-exit').click();
+      await expect(page.locator('#vox-immersive')).toBeHidden();
+    } finally {
+      await context.close();
+    }
+  });
+
+  test('chat all-replies scope wraps every assistant message', async () => {
+    const launched = await launchWithExtension();
+    if (!launched) test.skip(true, 'Chrome extension host unavailable');
+    const { context } = launched;
+    try {
+      const page = await context.newPage();
+      await page.goto(`file://${chatFixturePage}`);
+      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.keyboard.press('Alt+p');
+      await page.locator('#vox-settings-btn').click();
+      await page.locator('#eng-classic').click();
+      await page.selectOption('#chat-read-scope', 'all');
+      await page.locator('#vox-settings-close').click();
+      await page.locator('#vox-playpause-bar').click();
+      await page.waitForFunction(
+        () => document.querySelectorAll('.vox-word').length > 0,
+        null,
+        { timeout: 15_000 },
+      );
+      const replies = page.locator('[data-message-author-role="assistant"]');
+      await expect(replies.first().locator('.vox-word')).not.toHaveCount(0);
+      await expect(replies.last().locator('.vox-word')).not.toHaveCount(0);
+    } finally {
+      await context.close();
+    }
+  });
+
+  test('Alt+P pauses and resumes classic playback', async () => {
+    const launched = await launchWithExtension();
+    if (!launched) test.skip(true, 'Chrome extension host unavailable');
+    const { context } = launched;
+    try {
+      const page = await context.newPage();
+      await page.goto(`file://${fixturePage}`);
+      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.keyboard.press('Alt+p');
+      await page.locator('#vox-settings-btn').click();
+      await page.locator('#eng-classic').click();
+      await page.locator('#vox-settings-close').click();
+      await page.locator('#vox-playpause-bar').click();
+      await expect(page.locator('#vox-status')).toContainText(/Playing/i, { timeout: 10_000 });
+      await page.keyboard.press('Alt+p');
+      await expect(page.locator('#vox-status')).toContainText(/Paused/i, { timeout: 8_000 });
+      await page.keyboard.press('Alt+p');
+      await expect(page.locator('#vox-status')).toContainText(/Playing/i, { timeout: 8_000 });
+    } finally {
+      await context.close();
+    }
+  });
+
   test('chat fixture shows reply scope controls', async () => {
     const launched = await launchWithExtension();
     if (!launched) test.skip(true, 'Chrome extension host unavailable');

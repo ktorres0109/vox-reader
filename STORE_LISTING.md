@@ -73,6 +73,7 @@ Captured via `npm run capture:store`:
 3. `03-popup.png` — extension popup
 4. `04-iframe-selection.png` — Alt+R selection inside iframe
 5. `05-chat-reply-scope.png` — chat reply scope controls
+6. `06-immersive-reader.png` — immersive reader overlay
 
 ## Checklist before submit
 

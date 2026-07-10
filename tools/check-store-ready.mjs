@@ -39,6 +39,10 @@ for (const size of ['16', '48', '128']) {
   assert.equal(manifest.icons?.[size], `icons/icon${size}.png`, `manifest.icons.${size} mismatch`);
 }
 
+const privacyHtml = fs.readFileSync(path.join(root, 'docs/privacy.html'), 'utf8');
+const versionPattern = new RegExp(`v${manifest.version.replace(/\./g, '\\.')}`);
+assert.match(privacyHtml, versionPattern, 'docs/privacy.html should reference current extension version');
+
 const vendorFiles = [
   'vendor/kokoro.web.js',
   'vendor/lame.min.js',

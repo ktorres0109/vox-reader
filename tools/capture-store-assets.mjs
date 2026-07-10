@@ -59,6 +59,14 @@ try {
   await articlePage.screenshot({ path: path.join(outDir, '02-settings-export.png') });
   console.log('Saved store-assets/02-settings-export.png');
 
+  await articlePage.locator('#vox-settings-close').click();
+  await articlePage.locator('#vox-immersive-btn').click();
+  await articlePage.locator('#vox-immersive').waitFor({ state: 'visible', timeout: 10_000 });
+  await articlePage.waitForTimeout(400);
+  await articlePage.screenshot({ path: path.join(outDir, '06-immersive-reader.png') });
+  console.log('Saved store-assets/06-immersive-reader.png');
+  await articlePage.locator('#vox-immersive-exit').click();
+
   const frame = articlePage.frameLocator('#same-origin-frame');
   await frame.locator('p').evaluate((el) => {
     const range = document.createRange();
