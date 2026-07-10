@@ -331,6 +331,34 @@ test.describe('Vox Reader smoke', () => {
     }
   });
 
+  test('chat latest-only scope wraps only the last reply', async () => {
+    const launched = await launchWithExtension();
+    if (!launched) test.skip(true, 'Chrome extension host unavailable');
+    const { context } = launched;
+    try {
+      const page = await context.newPage();
+      await page.goto(`file://${chatFixturePage}`);
+      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.keyboard.press('Alt+p');
+      await page.locator('#vox-settings-btn').click();
+      await page.locator('#eng-classic').click();
+      await page.selectOption('#chat-read-scope', 'latest');
+      await page.locator('#vox-settings-close').click();
+      await page.locator('#vox-playpause-bar').click();
+      await page.waitForFunction(
+        () => document.querySelectorAll('.vox-word').length > 0,
+        null,
+        { timeout: 15_000 },
+      );
+      const firstReply = page.locator('[data-message-author-role="assistant"]').first();
+      const lastReply = page.locator('[data-message-author-role="assistant"]').last();
+      await expect(firstReply.locator('.vox-word')).toHaveCount(0);
+      await expect(lastReply.locator('.vox-word')).not.toHaveCount(0);
+    } finally {
+      await context.close();
+    }
+  });
+
   test('chat fixture shows reply scope controls', async () => {
     const launched = await launchWithExtension();
     if (!launched) test.skip(true, 'Chrome extension host unavailable');

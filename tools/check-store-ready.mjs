@@ -31,6 +31,10 @@ assert.match(listing, /github\.io\/vox-reader\/privacy\.html/, 'STORE_LISTING pr
 const popupHtml = fs.readFileSync(path.join(root, 'popup/popup.html'), 'utf8');
 assert.match(popupHtml, /privacy-link/, 'popup should link to privacy policy');
 
+for (const id of ['toggle-player', 'stop-reading', 'read-selection', 'export-audio']) {
+  assert.ok(manifest.commands?.[id], `manifest missing command: ${id}`);
+}
+
 const vendorFiles = [
   'vendor/kokoro.web.js',
   'vendor/lame.min.js',
