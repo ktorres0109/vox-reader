@@ -29,7 +29,7 @@ Vox Reader is a free Chrome extension that highlights words and sentences as it 
 - **MP3 + WAV export** — scope: all / selection / from here; MP3 bitrates 96–192 kbps
 - **Word-by-word highlighting** synced to speech
 - **Sentence highlighting** — background fill or underline, custom colors
-- **Chat-aware reading** — ChatGPT, Claude, Gemini; all assistant replies in order
+- **Chat reply scope** — read all replies, latest only, or pick one reply (ChatGPT / Claude / Gemini)
 - **Live chat sync** — re-anchors highlights while responses stream in
 - **Code blocks** — reads `<pre>` / `<code>` content aloud
 - **Classic system voices** — instant, no download (macOS / Windows / Linux)

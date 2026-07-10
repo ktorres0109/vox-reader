@@ -94,6 +94,8 @@
     playAfterExport: false,
     kreaderSync: false,
     chatDomDirty: false,          // chat DOM changed since last wrap
+    chatReadScope: 'all',         // all | latest | single (chat sites)
+    chatReadIndex: 0,
     speakEndIdx: null,            // when set, stop reading at this word index
     _voxDomUpdate: false,         // true while wrap/unwrap mutates the page
   };
@@ -127,6 +129,7 @@
       'speed','voiceName','shortcuts','highlightWord','highlightSentence',
       'sentenceStyle','wordColor','sentenceHex',
       'voiceEngine','kokoroVoice','kreaderSync','exportFormat','exportScope','exportBitrate',
+      'chatReadScope','chatReadIndex',
     ], (p) => {
       if (p.speed != null) S.speed = p.speed;
       if (p.voiceName) S.selectedVoiceName = p.voiceName;
@@ -145,6 +148,8 @@
         S.exportScope = p.exportScope;
       }
       if ([96, 128, 192].includes(p.exportBitrate)) S.exportBitrate = p.exportBitrate;
+      S.chatReadScope = (p.chatReadScope === 'latest' || p.chatReadScope === 'single') ? p.chatReadScope : 'all';
+      if (typeof p.chatReadIndex === 'number' && p.chatReadIndex >= 0) S.chatReadIndex = p.chatReadIndex;
       cb();
     });
   }
@@ -162,6 +167,8 @@
         exportFormat: S.exportFormat,
         exportScope: S.exportScope,
         exportBitrate: S.exportBitrate,
+        chatReadScope: S.chatReadScope,
+        chatReadIndex: S.chatReadIndex,
       });
     } catch(e) { /* extension reloaded mid-session, ignore */ }
   }
@@ -529,6 +536,7 @@
       if (!getChatRoots().length) return;
       S.chatDomDirty = true;
       if (S.speaking || S.paused) scheduleChatPlaybackSync();
+      syncChatReadUI();
     }, 400);
   }
 
@@ -603,9 +611,19 @@
     ).filter(el => (el.innerText || '').trim().length >= 20);
   }
 
+  function filterChatRootsForRead(roots) {
+    if (!roots.length) return roots;
+    if (S.chatReadScope === 'latest') return [roots[roots.length - 1]];
+    if (S.chatReadScope === 'single') {
+      const i = Math.min(Math.max(0, S.chatReadIndex), roots.length - 1);
+      return [roots[i]];
+    }
+    return roots;
+  }
+
   function getReadableRoots() {
     const chatRoots = getChatRoots();
-    if (chatRoots.length) return chatRoots;
+    if (chatRoots.length) return filterChatRootsForRead(chatRoots);
 
     const mdBody = document.querySelector(
       '.markdown-body, [class*="markdown-body"], .markdown-content, .md-content, ' +
@@ -1342,6 +1360,38 @@
     setTimeout(() => frame.remove(), 1000);
   }
 
+  function syncChatReadUI() {
+    const panel = document.getElementById('vox-chat-read-section');
+    if (!panel) return;
+    const roots = getChatRoots();
+    panel.classList.toggle('vs-hidden', roots.length < 2);
+    if (roots.length < 2) return;
+
+    const scopeEl = document.getElementById('chat-read-scope');
+    const idxEl = document.getElementById('chat-read-index');
+    if (scopeEl) scopeEl.value = S.chatReadScope;
+    if (idxEl) {
+      idxEl.innerHTML = roots.map((_, i) =>
+        `<option value="${i}"${S.chatReadIndex === i ? ' selected' : ''}>Reply ${i + 1} of ${roots.length}</option>`
+      ).join('');
+      idxEl.classList.toggle('vs-hidden', S.chatReadScope !== 'single');
+      if (S.chatReadIndex >= roots.length) {
+        S.chatReadIndex = roots.length - 1;
+        idxEl.value = String(S.chatReadIndex);
+      }
+    }
+  }
+
+  function onChatReadScopeChange() {
+    savePrefs();
+    syncChatReadUI();
+    if (S.words.length || document.querySelector('.vox-word')) {
+      prepareAndRewrap(() => {
+        if (S.speaking || S.paused) speakFrom(S.currentWord, S.speakEndIdx);
+      });
+    }
+  }
+
   function syncPrintUI() {
     const btn = document.getElementById('exp-pdf');
     if (!btn) return;
@@ -1667,6 +1717,19 @@
             </div>
           </div>
 
+          <!-- Chat reply scope (shown when multiple assistant messages detected) -->
+          <div class="vs vs-hidden" id="vox-chat-read-section">
+            <label class="vs-label">Chat reading</label>
+            <div style="display:flex;gap:6px;margin-top:4px;flex-wrap:wrap">
+              <select id="chat-read-scope" class="vs-export-format" style="max-width:120px" aria-label="Which replies to read">
+                <option value="all" ${S.chatReadScope==='all'?'selected':''}>All replies</option>
+                <option value="latest" ${S.chatReadScope==='latest'?'selected':''}>Latest only</option>
+                <option value="single" ${S.chatReadScope==='single'?'selected':''}>One reply</option>
+              </select>
+              <select id="chat-read-index" class="vs-export-format vs-hidden" style="max-width:120px" aria-label="Reply number"></select>
+            </div>
+          </div>
+
           <!-- KReader sync (optional, off by default) -->
           <div class="vs">
             <div class="vs-hl-toggle-pair">
@@ -1727,6 +1790,7 @@
     startChatObserver();
     syncEngineUI();
     syncPrintUI();
+    syncChatReadUI();
     window.dispatchEvent(new CustomEvent('vox-kreader-sync', { detail: { enabled: S.kreaderSync } }));
     if (S.voiceEngine === 'kokoro' && !S.kokoroModelCached) {
       startKokoroDownload();
@@ -1782,6 +1846,7 @@
     document.getElementById('vox-settings-btn').onclick = () => {
       S.settingsOpen = !S.settingsOpen;
       document.getElementById('vox-settings').classList.toggle('open', S.settingsOpen);
+      if (S.settingsOpen) syncChatReadUI();
     };
     document.getElementById('vox-settings-close').onclick = () => {
       S.settingsOpen = false;
@@ -1928,6 +1993,15 @@
       const n = parseInt(e.target.value, 10);
       S.exportBitrate = [96, 128, 192].includes(n) ? n : 128;
       savePrefs();
+    };
+    document.getElementById('chat-read-scope').onchange = (e) => {
+      const v = e.target.value;
+      S.chatReadScope = (v === 'latest' || v === 'single') ? v : 'all';
+      onChatReadScopeChange();
+    };
+    document.getElementById('chat-read-index').onchange = (e) => {
+      S.chatReadIndex = Math.max(0, parseInt(e.target.value, 10) || 0);
+      onChatReadScopeChange();
     };
 
     // Click-to-jump (only while speaking/paused)
