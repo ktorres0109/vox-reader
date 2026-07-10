@@ -344,6 +344,13 @@
   background: #252525; accent-color: #f59e0b;
 }
 #vox-kokoro-install .vs-label-muted { font-size: 10px; color: #555; margin-top: 4px; }
+.vs-install-cancel {
+  margin-top: 8px; width: 100%;
+  background: transparent; border: 1px solid #444; color: #aaa;
+  border-radius: 6px; padding: 6px 8px; font-size: 11px;
+  font-family: inherit; cursor: pointer;
+}
+.vs-install-cancel:hover { border-color: #f59e0b; color: #f59e0b; }
 #vox-kokoro-voice-select {
   width: 100%; background: #181818; border: 1px solid #252525;
   color: #ddd; border-radius: 8px; padding: 7px 8px;

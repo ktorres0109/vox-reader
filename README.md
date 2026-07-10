@@ -159,7 +159,8 @@ vox-reader/
 | Problem | Fix |
 |---------|-----|
 | AI voice stuck downloading | Check internet; reload extension; try Classic engine |
-| Play disabled | Wait for Kokoro download (progress bar) |
+| Play disabled | Wait for Kokoro download (progress bar) or cancel and use Classic |
+| Export queued | Stop or click **Cancel** on Export to abort download/export |
 | Only last chat reply read | Update extension — reads all assistant messages |
 | `kokoro.web.js` missing | `bash tools/fetch-deps.sh` |
 | Export fails | Try shorter selection; check Downloads permission; first export downloads AI voice once |

@@ -1396,11 +1396,17 @@
   }
 
   function stop(reset = false) {
-    const wasPendingExport = S.pendingExport && !S.speaking && !S.exporting;
+    const cancellingExportWait = (S.pendingExport || S.exporting) && !S.speaking;
     if (S.exporting) {
       sendMsg({ action: 'kokoro_export_cancel' });
       S.exporting = false;
       syncExportUI();
+    }
+    if (S.kokoroLoading) {
+      sendMsg({ action: 'kokoro_load_cancel' });
+      S.kokoroLoading = false;
+      S.kokoroDownloadPct = 0;
+      syncInstallUI();
     }
     S.pendingExport = false;
     if (S.voiceEngine === 'kokoro') {
@@ -1414,7 +1420,7 @@
     if (reset) S.currentWord = 0;
     document.documentElement.classList.remove('vox-reading');
     updatePlayBtn();
-    setStatus(wasPendingExport ? 'Export cancelled' : 'Stopped');
+    setStatus(cancellingExportWait ? 'Export cancelled' : 'Stopped');
     savePrefs();
   }
 
@@ -1758,7 +1764,26 @@
     });
   }
 
+  function cancelPendingExport() {
+    const hadPending = S.pendingExport;
+    if (S.kokoroLoading) {
+      sendMsg({ action: 'kokoro_load_cancel' });
+      S.kokoroLoading = false;
+      S.kokoroDownloadPct = 0;
+    }
+    S.pendingExport = false;
+    syncInstallUI();
+    syncExportUI();
+    if (hadPending) setStatus('Export cancelled');
+    return hadPending;
+  }
+
   function exportAudio() {
+    if (S.pendingExport && !S.exporting) {
+      cancelPendingExport();
+      return;
+    }
+
     const doExport = () => {
       const range = getExportWordRange();
       if (!range) {
@@ -1819,22 +1844,30 @@
     }
     if (!btn) return;
     const canFile = S.kokoroModelCached;
-    const ext = S.exportFormat === 'mp3' ? 'MP3' : 'WAV';
-    const scopeLabel = S.exportScope === 'selection' ? 'selection' : S.exportScope === 'here' ? 'from here' : 'full page';
-    btn.textContent = 'Export';
-    if (canFile) {
+    if (S.pendingExport && !S.exporting) {
+      btn.textContent = 'Cancel';
+      btn.title = S.kokoroLoading
+        ? 'Cancel AI voice download and export'
+        : 'Cancel queued export';
+      btn.disabled = false;
+    } else if (canFile) {
+      const ext = S.exportFormat === 'mp3' ? 'MP3' : 'WAV';
+      const scopeLabel = S.exportScope === 'selection' ? 'selection' : S.exportScope === 'here' ? 'from here' : 'full page';
+      btn.textContent = 'Export';
       btn.title = `Download ${ext} (${scopeLabel})`;
       btn.disabled = S.exporting;
     } else {
-      btn.title = S.kokoroLoading || S.pendingExport
+      const ext = S.exportFormat === 'mp3' ? 'MP3' : 'WAV';
+      btn.textContent = 'Export';
+      btn.title = S.kokoroLoading
         ? 'Downloading AI voice for export…'
         : `Download ${ext} — one-time AI voice download on first export`;
       btn.disabled = S.exporting;
     }
-    if (fmt) fmt.disabled = S.exporting;
-    if (scope) scope.disabled = S.exporting;
+    if (fmt) fmt.disabled = S.exporting && !S.pendingExport;
+    if (scope) scope.disabled = S.exporting && !S.pendingExport;
     if (bitrate) {
-      bitrate.disabled = S.exporting || S.exportFormat !== 'mp3';
+      bitrate.disabled = (S.exporting && !S.pendingExport) || S.exportFormat !== 'mp3';
       bitrate.classList.toggle('vs-hidden', S.exportFormat !== 'mp3');
     }
   }
@@ -1853,15 +1886,29 @@
   function syncInstallUI() {
     const panel = document.getElementById('vox-kokoro-install');
     const playBtn = document.getElementById('vox-playpause-bar');
+    const cancelBtn = document.getElementById('vox-install-cancel');
     if (!panel) return;
-    const show = S.voiceEngine === 'kokoro' && (!S.kokoroModelCached || S.kokoroLoading);
+    const show = S.kokoroLoading || (S.voiceEngine === 'kokoro' && !S.kokoroModelCached);
     panel.classList.toggle('vs-hidden', !show);
+    if (cancelBtn) cancelBtn.classList.toggle('vs-hidden', !S.kokoroLoading);
     if (playBtn) {
       const blocked = S.voiceEngine === 'kokoro' && !S.kokoroModelCached;
       playBtn.disabled = blocked;
       playBtn.title = blocked ? 'AI voice must finish downloading first' : '';
     }
     syncExportUI();
+  }
+
+  function cancelKokoroDownload() {
+    if (!S.kokoroLoading) return;
+    sendMsg({ action: 'kokoro_load_cancel' });
+    S.kokoroLoading = false;
+    S.kokoroDownloadPct = 0;
+    const wasPendingExport = S.pendingExport;
+    S.pendingExport = false;
+    syncInstallUI();
+    syncExportUI();
+    setStatus(wasPendingExport ? 'Export cancelled' : 'Download cancelled');
   }
 
   function updateKokoroInstallProgress(pct, file, status) {
@@ -1962,6 +2009,7 @@
         <p id="vox-install-status">AI Neural voice required — downloading once (~86MB)</p>
         <progress id="vox-install-progress" max="100" value="0" aria-label="Download progress"></progress>
         <p id="vox-install-file" class="vs-label-muted"></p>
+        <button type="button" class="vs-install-cancel vs-hidden" id="vox-install-cancel">Cancel download</button>
       </div>
 
       <!-- Settings panel -->
@@ -2195,7 +2243,7 @@
     document.getElementById('eng-classic').onclick = () => {
       if (S.voiceEngine === 'classic') return;
       stop(false);
-      S.voiceEngine = 'classic'; S.kokoroLoading = false; savePrefs(); syncEngineUI();
+      S.voiceEngine = 'classic'; savePrefs(); syncEngineUI();
       document.getElementById('eng-classic').setAttribute('aria-pressed', 'true');
       document.getElementById('eng-kokoro').setAttribute('aria-pressed', 'false');
     };
@@ -2295,6 +2343,7 @@
 
     document.getElementById('exp-pdf').onclick = () => printReadable();
     document.getElementById('exp-mp3').onclick = exportAudio;
+    document.getElementById('vox-install-cancel')?.addEventListener('click', cancelKokoroDownload);
     document.getElementById('export-format').onchange = (e) => {
       S.exportFormat = e.target.value === 'wav' ? 'wav' : 'mp3';
       savePrefs();
@@ -2460,11 +2509,28 @@
     }
 
     if (msg.action === 'kokoro_progress') {
-      if (S.pendingExport) {
-        setStatus(`Downloading for export… ${msg.pct || 0}%`, true);
-      } else if (S.voiceEngine === 'kokoro') {
+      if (S.kokoroLoading) {
         updateKokoroInstallProgress(msg.pct || 0, msg.file, msg.status);
       }
+      if (S.pendingExport) {
+        setStatus(`Downloading for export… ${msg.pct || 0}%`, true);
+      } else if (S.voiceEngine === 'kokoro' && S.kokoroLoading) {
+        setStatus(`Downloading Kokoro model… ${msg.pct || 0}%`, true);
+      }
+      return;
+    }
+
+    if (msg.action === 'kokoro_load_cancelled') {
+      S.kokoroLoading = false;
+      S.kokoroDownloadPct = 0;
+      const wasPendingExport = S.pendingExport;
+      S.pendingExport = false;
+      syncInstallUI();
+      syncExportUI();
+      if (S.voiceEngine === 'kokoro' && !S.kokoroModelCached) {
+        setKokoroUIState('error');
+      }
+      setStatus(wasPendingExport ? 'Export cancelled' : 'Download cancelled');
       return;
     }
 
@@ -2497,8 +2563,12 @@
 
     if (msg.action === 'kokoro_error') {
       const wasLoading = S.kokoroLoading;
+      const wasPendingExport = S.pendingExport;
       S.kokoroLoading = false;
+      S.pendingExport = false;
       if (wasLoading) invalidateKokoroCache();
+      syncInstallUI();
+      syncExportUI();
       if (S.voiceEngine === 'kokoro') {
         S.speaking = false;
         stopTicker(); clearHL();
@@ -2506,7 +2576,8 @@
         updatePlayBtn();
         setStatus('Error: ' + (msg.error || 'unknown'));
         setKokoroUIState(S.kokoroModelCached ? 'ready' : 'error');
-        syncInstallUI();
+      } else if (wasPendingExport) {
+        setStatus('Export error: ' + (msg.error || 'unknown'));
       }
       return;
     }

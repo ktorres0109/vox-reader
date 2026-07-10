@@ -14,6 +14,7 @@ let isPlaying = false;
 let generation = 0;
 let exportGeneration = 0;
 let exportInProgress = false;
+let loadGeneration = 0;
 let modelLoadingPromise = null;
 let currentVoice = 'af_bella';
 
@@ -55,11 +56,16 @@ async function loadModel(tabId, voice) {
   }
   if (modelLoadingPromise) return modelLoadingPromise;
 
+  const thisGen = ++loadGeneration;
   modelLoadingPromise = KokoroTTS.from_pretrained(MODEL_ID, {
     dtype: 'q8',
     device: 'wasm',
-    progress_callback: (data) => reportProgress(tabId, data),
+    progress_callback: (data) => {
+      if (thisGen !== loadGeneration) return;
+      reportProgress(tabId, data);
+    },
   }).then(async (model) => {
+    if (thisGen !== loadGeneration) throw new Error('Download cancelled');
     tts = model;
     modelLoadingPromise = null;
     await warmVoice(currentVoice);
@@ -306,10 +312,24 @@ chrome.runtime.onMessage.addListener((msg) => {
 
   if (msg.action === 'kokoro_load') {
     const tabId = msg.tabId;
+    const loadGen = loadGeneration;
     if (msg.voice) currentVoice = msg.voice;
     loadModel(tabId, msg.voice)
-      .then(() => send({ action: 'kokoro_ready', tabId }))
-      .catch((err) => send({ action: 'kokoro_error', error: err.message, tabId }));
+      .then(() => {
+        if (loadGen !== loadGeneration) return;
+        send({ action: 'kokoro_ready', tabId });
+      })
+      .catch((err) => {
+        if (loadGen !== loadGeneration || err.message === 'Download cancelled') return;
+        send({ action: 'kokoro_error', error: err.message, tabId });
+      });
+    return;
+  }
+
+  if (msg.action === 'kokoro_load_cancel') {
+    loadGeneration++;
+    modelLoadingPromise = null;
+    send({ action: 'kokoro_load_cancelled', tabId: msg.tabId });
     return;
   }
 
