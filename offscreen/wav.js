@@ -32,12 +32,16 @@ export function encodeWav(samples, sampleRate = 24000) {
   return buffer;
 }
 
-export function wavToBase64(wavBuffer) {
-  const bytes = new Uint8Array(wavBuffer);
+export function bytesToBase64(buffer) {
+  const bytes = buffer instanceof ArrayBuffer ? new Uint8Array(buffer) : buffer;
   let binary = '';
   const block = 8192;
   for (let i = 0; i < bytes.length; i += block) {
     binary += String.fromCharCode.apply(null, bytes.subarray(i, i + block));
   }
   return btoa(binary);
+}
+
+export function wavToBase64(wavBuffer) {
+  return bytesToBase64(wavBuffer);
 }

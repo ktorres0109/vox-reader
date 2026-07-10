@@ -19,14 +19,14 @@ Vox Reader is a free Chrome extension that highlights words and sentences as it 
 | Offline | Works after one-time model download | Requires internet |
 | Highlighting | Word + sentence sync | Rarely built-in |
 | Chat threads | Reads full assistant conversations | N/A |
-| Export | Download WAV (Kokoro) | Rarely built-in |
+| Export | Download MP3 or WAV (Kokoro) | Rarely built-in |
 
 ---
 
 ## Features
 
 - **Bella AI voice (default)** — Kokoro 82M neural TTS; American + British voices
-- **WAV export** — download narration as `vox-reader-{voice}.wav` (Kokoro engine)
+- **MP3 + WAV export** — download narration as `vox-reader-{voice}.mp3` (default) or `.wav` (Kokoro engine)
 - **Word-by-word highlighting** synced to speech
 - **Sentence highlighting** — background fill or underline, custom colors
 - **Chat-aware reading** — ChatGPT, Claude, Gemini; all assistant replies in order
@@ -84,7 +84,7 @@ On first open, Vox Reader downloads the **Kokoro 82M model** (~86 MB) from Huggi
 | Play page | **▶** in the floating player (or **Alt+P** — opens player if needed) |
 | Pause / resume | **▶** again or **Alt+P** |
 | Stop | **Alt+S** |
-| Export WAV | **Export** button (Kokoro engine, after model loads) |
+| Export audio | **Export** button — MP3 (default) or WAV in settings row (Kokoro) |
 | Print | **Print** — reader view in immersive mode, full page otherwise |
 | Immersive mode | **☰** |
 | Settings | **⚙** |
@@ -134,7 +134,7 @@ After changing extension code, **Reload** on `chrome://extensions` and refresh t
 vox-reader/
 ├── background/       # Service worker, downloads, offscreen routing
 ├── content/          # Player, highlighting, chat detection
-├── offscreen/        # Kokoro synthesis + WAV encoder
+├── offscreen/        # Kokoro synthesis + MP3/WAV encoders
 ├── popup/            # Toolbar popup
 ├── tools/
 │   ├── fetch-deps.sh
