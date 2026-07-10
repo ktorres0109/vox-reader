@@ -174,7 +174,7 @@ Vox Reader processes text **on your device**. See [PRIVACY.md](PRIVACY.md) for t
 
 ## Chrome Web Store
 
-Listing copy and screenshot checklist: [STORE_LISTING.md](STORE_LISTING.md). Capture screenshots with `npm run capture:store`. Pack for upload with `npm run pack` → `dist/vox-reader.zip`.
+Listing copy and screenshot checklist: [STORE_LISTING.md](STORE_LISTING.md). Capture screenshots with `npm run capture:store`. Pack for upload with `npm run pack:store` → `dist/vox-reader.zip`.
 
 Privacy page for store URL: [docs/privacy.html](docs/privacy.html) (GitHub Pages from `docs/`).
 

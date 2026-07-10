@@ -20,6 +20,15 @@ const required = [
   'offscreen/offscreen.js',
 ];
 
+const strict = process.argv.includes('--strict') || process.env.VOX_PACK_STRICT === '1';
+
+const storeVendor = [
+  'vendor/kokoro.web.js',
+  'vendor/lame.min.js',
+  'vendor/ort-wasm-simd-threaded.jsep.mjs',
+  'vendor/ort-wasm-simd-threaded.jsep.wasm',
+];
+
 for (const file of required) {
   if (!fs.existsSync(path.join(root, file))) {
     console.error(`pack: missing required file ${file}`);
@@ -27,9 +36,16 @@ for (const file of required) {
   }
 }
 
-const kokoro = path.join(root, 'vendor/kokoro.web.js');
-if (!fs.existsSync(kokoro)) {
-  console.warn('pack: vendor/kokoro.web.js missing — run npm run fetch-deps before store upload');
+for (const file of storeVendor) {
+  const full = path.join(root, file);
+  if (!fs.existsSync(full)) {
+    const msg = `pack: missing ${file} — run npm run fetch-deps`;
+    if (strict) {
+      console.error(`pack: ${msg}`);
+      process.exit(1);
+    }
+    console.warn(`pack: ${msg}`);
+  }
 }
 
 if (!fs.existsSync(distDir)) fs.mkdirSync(distDir, { recursive: true });
