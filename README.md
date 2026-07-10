@@ -35,7 +35,7 @@ Vox Reader is a free Chrome extension that highlights words and sentences as it 
 - **Classic system voices** — instant, no download (macOS / Windows / Linux)
 - **Floating player** — draggable bar with scrubbable progress, skip ±15 words
 - **Immersive reader** — distraction-free view; **Print** outputs clean reader text
-- **Selection reading** — popup, context menu, or **Alt+R** (including cross-origin iframes with in-frame highlighting)
+- **Selection reading** — popup, context menu, or **Alt+R** (including cross-origin iframes with in-frame word + sentence highlighting)
 - **Click-to-jump** — click any word while playing to seek
 - **Speed control** — 0.5× to 3.0× (Kokoro + Classic)
 - **Keyboard shortcuts** — fully customizable; **Alt+P** works before opening player
