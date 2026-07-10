@@ -1,6 +1,6 @@
 {
   "name": "vox-reader",
-  "version": "2.4.8",
+  "version": "2.4.9",
   "private": true,
   "type": "module",
   "description": "Chrome extension — read webpages aloud with word highlighting",
@@ -8,8 +8,9 @@
     "test": "bash tools/run-tests.sh",
     "test:e2e": "playwright test",
     "capture:store": "node tools/capture-store-assets.mjs",
+    "check:store": "node tools/check-store-ready.mjs",
     "pack": "node tools/pack-extension.mjs",
-    "pack:store": "npm run fetch-deps && node tools/pack-extension.mjs --strict",
+    "pack:store": "npm run check:store && npm run fetch-deps && node tools/pack-extension.mjs --strict",
     "fetch-deps": "bash tools/fetch-deps.sh"
   },
   "devDependencies": {
