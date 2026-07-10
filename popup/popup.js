@@ -1,6 +1,8 @@
 const CONTENT_FILES = ['content/content.js', 'content/tts_sync.js'];
 const CONTENT_CSS = ['content/content.css'];
 
+const PRIVACY_URL = 'https://ktorres0109.github.io/vox-reader/privacy.html';
+
 async function getActiveTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   return tab;
@@ -45,6 +47,14 @@ chrome.storage.sync.get('shortcuts', (p) => {
   document.getElementById('sc-stop-display').textContent = `Alt+${(sc.stop || 's').toUpperCase()}`;
   document.getElementById('sc-read-display').textContent = `Alt+${(sc.read || 'r').toUpperCase()}`;
   document.getElementById('sc-export-display').textContent = `Alt+${(sc.export || 'e').toUpperCase()}`;
+});
+
+const manifest = chrome.runtime.getManifest();
+const versionEl = document.getElementById('popup-version');
+if (versionEl) versionEl.textContent = `v${manifest.version}`;
+
+document.getElementById('privacy-link')?.addEventListener('click', () => {
+  chrome.tabs.create({ url: PRIVACY_URL });
 });
 
 document.getElementById('open-player').addEventListener('click', async () => {
