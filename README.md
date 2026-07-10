@@ -174,6 +174,8 @@ Vox Reader processes text **on your device**. See [PRIVACY.md](PRIVACY.md) for t
 
 ## Chrome Web Store
 
+**v2.6.0** is the store-ready release line — 32+ automated smoke tests, `npm run release:store`, and `npm run capture:store`.
+
 Listing copy and screenshot checklist: [STORE_LISTING.md](STORE_LISTING.md). Run `npm run check:store` before submit. One-command release build: `npm run release:store` → `dist/vox-reader.zip`. Capture screenshots with `npm run capture:store`.
 
 Privacy page for store URL: [docs/privacy.html](docs/privacy.html) (GitHub Pages from `docs/`).

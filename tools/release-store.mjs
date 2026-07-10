@@ -27,3 +27,4 @@ console.log('  3. Privacy URL: https://ktorres0109.github.io/vox-reader/privacy.
 console.log('  4. Copy listing text from STORE_LISTING.md');
 console.log('  5. Remap shortcuts at chrome://extensions/shortcuts if needed');
 console.log('  6. Verify privacy page: https://ktorres0109.github.io/vox-reader/privacy.html');
+console.log('  7. Run npm test && npm run test:e2e locally if changing playback/export');

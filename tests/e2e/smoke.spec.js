@@ -661,6 +661,100 @@ test.describe('Vox Reader smoke', () => {
     }
   });
 
+  test('skip back moves highlight while paused', async () => {
+    const launched = await launchWithExtension();
+    if (!launched) test.skip(true, 'Chrome extension host unavailable');
+    const { context } = launched;
+    try {
+      const page = await context.newPage();
+      await page.goto(`file://${fixturePage}`);
+      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.keyboard.press('Alt+p');
+      await page.locator('#vox-settings-btn').click();
+      await page.locator('#eng-classic').click();
+      await page.locator('#vox-settings-close').click();
+      await page.locator('#vox-playpause-bar').click();
+      await expect(page.locator('#vox-status')).toContainText(/Playing/i, { timeout: 10_000 });
+      await page.waitForFunction(
+        () => document.querySelectorAll('article .vox-word').length > 0,
+        null,
+        { timeout: 15_000 },
+      );
+      await page.locator('#vox-fwd-bar').click();
+      await page.locator('#vox-fwd-bar').click();
+      await page.keyboard.press('Alt+p');
+      const beforeIdx = await page.locator('article .vox-word-active').first().getAttribute('data-vox-index');
+      await page.locator('#vox-back-bar').click();
+      await expect.poll(async () => {
+        const idx = await page.locator('article .vox-word-active').first().getAttribute('data-vox-index');
+        return Number(idx) < Number(beforeIdx);
+      }).toBe(true);
+    } finally {
+      await context.close();
+    }
+  });
+
+  test('export WAV format hides MP3 bitrate control', async () => {
+    const launched = await launchWithExtension();
+    if (!launched) test.skip(true, 'Chrome extension host unavailable');
+    const { context } = launched;
+    try {
+      const page = await context.newPage();
+      await page.goto(`file://${fixturePage}`);
+      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.keyboard.press('Alt+p');
+      await page.locator('#vox-settings-btn').click();
+      await page.selectOption('#export-format', 'wav');
+      await expect(page.locator('#export-bitrate')).toHaveClass(/vs-hidden/);
+      await page.selectOption('#export-format', 'mp3');
+      await expect(page.locator('#export-bitrate')).not.toHaveClass(/vs-hidden/);
+    } finally {
+      await context.close();
+    }
+  });
+
+  test('custom export shortcut triggers export queue', async () => {
+    const launched = await launchWithExtension();
+    if (!launched) test.skip(true, 'Chrome extension host unavailable');
+    const { context } = launched;
+    try {
+      const page = await context.newPage();
+      await page.goto(`file://${fixturePage}`);
+      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.keyboard.press('Alt+p');
+      await page.locator('#vox-settings-btn').click();
+      await page.locator('#sc-export').fill('x');
+      await page.locator('#sc-save').click();
+      await expect(page.locator('#vox-status')).toContainText(/Saved/i, { timeout: 5_000 });
+      await page.locator('#vox-settings-close').click();
+      await page.keyboard.press('Alt+x');
+      await expect(page.locator('#exp-mp3')).toHaveText('Cancel', { timeout: 10_000 });
+    } finally {
+      await context.close();
+    }
+  });
+
+  test('voice engine toggle shows classic voice picker', async () => {
+    const launched = await launchWithExtension();
+    if (!launched) test.skip(true, 'Chrome extension host unavailable');
+    const { context } = launched;
+    try {
+      const page = await context.newPage();
+      await page.goto(`file://${fixturePage}`);
+      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.keyboard.press('Alt+p');
+      await page.locator('#vox-settings-btn').click();
+      await page.locator('#eng-classic').click();
+      await expect(page.locator('#vox-classic-voice-section')).toBeVisible();
+      await expect(page.locator('#vox-kokoro-section')).toBeHidden();
+      await page.locator('#eng-kokoro').click();
+      await expect(page.locator('#vox-kokoro-section')).toBeVisible();
+      await expect(page.locator('#vox-classic-voice-section')).toBeHidden();
+    } finally {
+      await context.close();
+    }
+  });
+
   test('chat fixture shows reply scope controls', async () => {
     const launched = await launchWithExtension();
     if (!launched) test.skip(true, 'Chrome extension host unavailable');
