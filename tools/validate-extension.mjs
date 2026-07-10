@@ -10,6 +10,7 @@ const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'u
 assert.equal(manifest.manifest_version, 3);
 assert.ok(manifest.version, 'manifest version required');
 assert.ok(manifest.background?.service_worker);
+assert.ok(manifest.commands?.['toggle-player'], 'manifest commands required');
 
 const required = [
   'background/service_worker.js',

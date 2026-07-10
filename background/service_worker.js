@@ -44,6 +44,42 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   sendToTab(tab.id, { action: 'read_selection', text });
 });
 
+async function getTabSelection(tabId) {
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: () => (window.getSelection()?.toString() || '').trim(),
+    });
+    return (results || []).map((r) => r.result).filter(Boolean).join('\n').trim();
+  } catch (_) {
+    return '';
+  }
+}
+
+chrome.commands.onCommand.addListener(async (command) => {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id) return;
+  const tabId = tab.id;
+
+  if (command === 'toggle-player') {
+    await sendToTab(tabId, { action: 'command_play_pause' });
+    return;
+  }
+  if (command === 'stop-reading') {
+    await sendToTab(tabId, { action: 'command_stop' });
+    return;
+  }
+  if (command === 'read-selection') {
+    const text = await getTabSelection(tabId);
+    if (!text) return;
+    await sendToTab(tabId, { action: 'read_selection', text });
+    return;
+  }
+  if (command === 'export-audio') {
+    await sendToTab(tabId, { action: 'command_export' });
+  }
+});
+
 // ── Offscreen document management ──────────────────────────────────────────
 let offscreenCreating = false;
 let kokoroActiveTabId = null;

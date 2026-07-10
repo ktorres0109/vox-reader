@@ -27,7 +27,7 @@ Vox Reader is a free Chrome extension. No account, no API key, no cloud. Your te
 ✓ Floating player — speed 0.5×–3×, skip ±15 words, click-to-jump
 ✓ Immersive reader + clean print view
 ✓ Read selection — popup, right-click, Alt+R (works in iframes)
-✓ Keyboard shortcuts — Alt+P play, Alt+E export, fully customizable
+✓ Keyboard shortcuts — Alt+P play, Alt+E export, fully customizable (chrome://extensions/shortcuts)
 
 PRIVACY FIRST
 All reading and AI speech synthesis run locally in your browser. See PRIVACY.md in the repo.
@@ -77,7 +77,7 @@ Captured via `npm run capture:store`:
 ## Checklist before submit
 
 - [ ] Run `npm run check:store` (icons, docs, version sync)
-- [ ] Run `npm run pack:store` → upload `dist/vox-reader.zip`
+- [ ] Run `npm run release:store` → upload `dist/vox-reader.zip` (check + fetch-deps + strict pack)
 - [ ] Run `npm run capture:store` → upload screenshots from `store-assets/`
 - [ ] Upload icons 128×128 (already in `icons/`)
 - [ ] Privacy policy URL live
