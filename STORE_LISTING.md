@@ -59,6 +59,9 @@ Provide text-to-speech with visual highlighting for web page content the user ch
 ## Privacy policy URL
 
 Host `PRIVACY.md` on GitHub Pages or link to:
+`https://<username>.github.io/vox-reader/privacy.html` (after enabling Pages on the `docs/` folder)
+
+Or link to:
 `https://github.com/ktorres0109/vox-reader/blob/main/PRIVACY.md`
 
 ## Suggested screenshots (1280×800 or 640×400)
@@ -73,7 +76,7 @@ Host `PRIVACY.md` on GitHub Pages or link to:
 
 - [ ] Run `npm run fetch-deps` before packing
 - [ ] Bump `manifest.json` version
-- [ ] Zip extension (exclude `node_modules`, `.git`, `test-results`)
+- [ ] Run `npm run pack` → upload `dist/vox-reader.zip`
 - [ ] Upload icons 128×128 (already in `icons/`)
 - [ ] Privacy policy URL live
 - [ ] Test on clean Chrome profile
