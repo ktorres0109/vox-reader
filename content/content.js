@@ -74,7 +74,7 @@
     playerEl: null, settingsOpen: false,
     immersiveActive: false, immersiveOverlay: null,
     dragging: false, dragOffsetX: 0, dragOffsetY: 0,
-    shortcuts: { play: 'p', stop: 's', read: 'r' },
+    shortcuts: { play: 'p', stop: 's', read: 'r', export: 'e' },
     highlightWord: true, highlightSentence: true,
     sentenceStyle: 'bg',          // 'bg' | 'underline'
     wordColor: '#f59e0b',
@@ -88,6 +88,7 @@
     kokoroVoice: DEFAULT_KOKORO_VOICE,
     kokoroDownloadPct: 0,
     exporting: false,
+    pendingExport: false,
     exportFormat: 'mp3',
     exportScope: 'all',
     exportBitrate: 128,
@@ -1006,6 +1007,7 @@
       S.speaking = false; S.paused = false; S.speakEndIdx = null;
       document.documentElement.classList.remove('vox-reading');
       updatePlayBtn(); setStatus('Done'); S.currentWord = 0;
+      maybeRunPendingExport();
     };
     u.onerror = (e) => {
       stopTicker();
@@ -1105,6 +1107,7 @@
       S.exporting = false;
       syncExportUI();
     }
+    S.pendingExport = false;
     if (S.voiceEngine === 'kokoro') {
       sendMsg({ action: 'kokoro_stop' });
     } else {
@@ -1426,6 +1429,35 @@
     };
   }
 
+  function maybeRunPendingExport() {
+    if (!S.pendingExport || S.exporting) return;
+    S.pendingExport = false;
+    exportAudio();
+  }
+
+  function runKokoroFileExport(startIdx, endIdx) {
+    const sentences = getSentencesFrom(startIdx, endIdx);
+    if (!sentences.length) {
+      setStatus('Nothing to export');
+      return;
+    }
+    S.exporting = true;
+    const ext = S.exportFormat === 'mp3' ? 'mp3' : 'wav';
+    const filename = `vox-reader-${S.kokoroVoice || 'kokoro'}.${ext}`;
+    const label = ext.toUpperCase();
+    setStatus(`Generating ${label}… 0%`, true);
+    syncExportUI();
+    sendMsg({
+      action: 'kokoro_export',
+      sentences,
+      speed: S.speed,
+      voice: S.kokoroVoice,
+      filename,
+      format: S.exportFormat,
+      mp3Bitrate: S.exportBitrate,
+    });
+  }
+
   function exportAudio() {
     const doExport = () => {
       const range = getExportWordRange();
@@ -1448,32 +1480,19 @@
         setStatus(`Export capped at ${MAX_EXPORT_WORDS} words`, true);
       }
 
-      if (S.voiceEngine === 'kokoro') {
+      if (S.voiceEngine === 'kokoro' || S.kokoroModelCached) {
         if (!S.kokoroModelCached) {
           setStatus('AI voice must finish downloading first', true);
           return;
         }
         if (S.exporting) return;
-        if (S.speaking || S.paused) stop(false);
-        const sentences = getSentencesFrom(startIdx, endIdx);
-        if (!sentences.length) {
-          setStatus('Nothing to export');
+        if (S.speaking && !S.paused) {
+          S.pendingExport = true;
+          setStatus('Will export when playback finishes…', true);
           return;
         }
-        S.exporting = true;
-        const ext = S.exportFormat === 'mp3' ? 'mp3' : 'wav';
-        const filename = `vox-reader-${S.kokoroVoice || 'kokoro'}.${ext}`;
-        const label = ext.toUpperCase();
-        setStatus(`Generating ${label}… 0%`, true);
-        sendMsg({
-          action: 'kokoro_export',
-          sentences,
-          speed: S.speed,
-          voice: S.kokoroVoice,
-          filename,
-          format: S.exportFormat,
-          mp3Bitrate: S.exportBitrate,
-        });
+        if (S.speaking || S.paused) stop(false);
+        runKokoroFileExport(startIdx, endIdx);
         return;
       }
 
@@ -1485,8 +1504,12 @@
       setStatus('Previewing speech (classic voice)…', true);
       const u = new SpeechSynthesisUtterance(text);
       u.rate = S.speed; if (S.voice) u.voice = S.voice;
-      u.onend = () => setStatus('Preview done');
+      u.onend = () => {
+        setStatus('Preview done');
+        maybeRunPendingExport();
+      };
       window.speechSynthesis.speak(u);
+      return;
     };
     if (!S.words.length) { rewrap(doExport); return; }
     doExport();
@@ -1504,20 +1527,24 @@
       bitrate.classList.toggle('vs-hidden', S.exportFormat !== 'mp3');
     }
     if (!btn) return;
-    if (S.voiceEngine === 'kokoro') {
-      const ext = S.exportFormat === 'mp3' ? 'MP3' : 'WAV';
-      const scopeLabel = S.exportScope === 'selection' ? 'selection' : S.exportScope === 'here' ? 'from here' : 'full page';
+    const canFile = S.kokoroModelCached;
+    const ext = S.exportFormat === 'mp3' ? 'MP3' : 'WAV';
+    const scopeLabel = S.exportScope === 'selection' ? 'selection' : S.exportScope === 'here' ? 'from here' : 'full page';
+    if (S.voiceEngine === 'kokoro' || canFile) {
       btn.textContent = 'Export';
-      btn.title = S.kokoroModelCached
+      btn.title = canFile
         ? `Download ${ext} (${scopeLabel})`
         : 'AI voice must finish downloading first';
-      btn.disabled = !S.kokoroModelCached || S.exporting;
-      if (fmt) fmt.disabled = !S.kokoroModelCached || S.exporting;
-      if (scope) scope.disabled = !S.kokoroModelCached || S.exporting;
-      if (bitrate) bitrate.disabled = !S.kokoroModelCached || S.exporting || S.exportFormat !== 'mp3';
+      btn.disabled = !canFile || S.exporting;
+      if (fmt) fmt.disabled = !canFile || S.exporting;
+      if (scope) scope.disabled = !canFile || S.exporting;
+      if (bitrate) {
+        bitrate.disabled = !canFile || S.exporting || S.exportFormat !== 'mp3';
+        bitrate.classList.toggle('vs-hidden', S.exportFormat !== 'mp3');
+      }
     } else {
       btn.textContent = 'Preview';
-      btn.title = 'Preview with classic voice (not a file download)';
+      btn.title = 'Preview with classic voice — enable AI voice in Settings for file download';
       btn.disabled = false;
       if (fmt) fmt.disabled = true;
       if (scope) scope.disabled = false;
@@ -1713,6 +1740,7 @@
               <label class="vs-sc-pair"><span>▶</span><input class="vs-sc-input" id="sc-play" maxlength="1"></label>
               <label class="vs-sc-pair"><span>■</span><input class="vs-sc-input" id="sc-stop" maxlength="1"></label>
               <label class="vs-sc-pair"><span>sel</span><input class="vs-sc-input" id="sc-read" maxlength="1"></label>
+              <label class="vs-sc-pair"><span>exp</span><input class="vs-sc-input" id="sc-export" maxlength="1"></label>
               <button class="vs-sc-save" id="sc-save">Save</button>
             </div>
           </div>
@@ -1784,6 +1812,7 @@
     document.getElementById('sc-play').value = S.shortcuts.play;
     document.getElementById('sc-stop').value = S.shortcuts.stop;
     document.getElementById('sc-read').value = S.shortcuts.read;
+    document.getElementById('sc-export').value = S.shortcuts.export;
     // If engine was already set to kokoro from saved prefs, mark loading before syncEngineUI
     // so the UI renders in loading state, then kick off the model load.
     // Offscreen handles already-loaded case with `if (synthesizer) return`.
@@ -1973,6 +2002,7 @@
       S.shortcuts.play = document.getElementById('sc-play').value || 'p';
       S.shortcuts.stop = document.getElementById('sc-stop').value || 's';
       S.shortcuts.read = document.getElementById('sc-read').value || 'r';
+      S.shortcuts.export = document.getElementById('sc-export').value || 'e';
       savePrefs(); setStatus('Saved!');
     };
 
@@ -2121,6 +2151,7 @@
       S.speaking = false; S.paused = false; S.speakEndIdx = null;
       document.documentElement.classList.remove('vox-reading');
       updatePlayBtn(); setStatus('Done'); S.currentWord = 0;
+      maybeRunPendingExport();
       return;
     }
 
@@ -2128,6 +2159,7 @@
       S.kokoroModelCached = true; S.kokoroLoading = false;
       S.kokoroDownloadPct = 100;
       saveKokoroFlag();
+      syncExportUI();
       if (S.voiceEngine === 'kokoro') {
         setKokoroUIState('ready');
         updateKokoroInstallProgress(100, '', 'Download complete');
@@ -2204,6 +2236,10 @@
       e.preventDefault();
       const text = getSelectionText();
       if (text) ensurePlayerReady(() => { readSelection(text).catch(() => {}); });
+    }
+    if (shortcutKeyMatches(e, S.shortcuts.export)) {
+      e.preventDefault();
+      ensurePlayerReady(() => { exportAudio(); });
     }
   });
 
