@@ -14,6 +14,60 @@
     window.__voxReaderFrameBridge = true;
 
     const frameWords = [];
+    const frameSentences = [];
+
+    function applyFrameTheme(d) {
+      if (!d) return;
+      if (d.wordColor) {
+        document.documentElement.style.setProperty('--vox-word-color', d.wordColor);
+      }
+      if (d.sentenceHex) {
+        document.documentElement.style.setProperty('--vox-sentence-color', d.sentenceHex);
+        const h = d.sentenceHex;
+        const r = parseInt(h.slice(1, 3), 16);
+        const g = parseInt(h.slice(3, 5), 16);
+        const b = parseInt(h.slice(5, 7), 16);
+        document.documentElement.style.setProperty('--vox-sentence-bg', `rgba(${r},${g},${b},0.25)`);
+      }
+      document.documentElement.classList.toggle('vox-sentence-style-bg', d.sentenceStyle === 'bg');
+      document.documentElement.classList.toggle('vox-sentence-style-underline', d.sentenceStyle === 'underline');
+    }
+
+    function buildFrameSentences() {
+      frameSentences.length = 0;
+      if (!frameWords.length) return;
+      let start = 0;
+      for (let i = 0; i < frameWords.length; i++) {
+        if (/[.!?]["')\]]*$/.test(frameWords[i].text) && frameWords[i].text.length > 1) {
+          frameSentences.push({ start, end: i });
+          start = i + 1;
+        }
+      }
+      if (start < frameWords.length) frameSentences.push({ start, end: frameWords.length - 1 });
+    }
+
+    function getFrameSentenceIdx(wordIdx) {
+      for (let i = 0; i < frameSentences.length; i++) {
+        const s = frameSentences[i];
+        if (wordIdx >= s.start && wordIdx <= s.end) return i;
+      }
+      return -1;
+    }
+
+    function clearFrameHL() {
+      document.querySelectorAll('.vox-word-active, .vox-sentence-active').forEach((el) => {
+        el.classList.remove('vox-word-active', 'vox-sentence-active');
+      });
+    }
+
+    function placeFrameSentenceOverlays(si, highlightSentence) {
+      if (!highlightSentence || si < 0) return;
+      const s = frameSentences[si];
+      if (!s) return;
+      for (let i = s.start; i <= s.end; i++) {
+        frameWords[i]?.el?.classList.add('vox-sentence-active');
+      }
+    }
 
     function publishFrameSelection() {
       let text = '';
@@ -29,10 +83,9 @@
       document.querySelectorAll('.vox-word').forEach((sp) => {
         sp.parentNode?.replaceChild(document.createTextNode(sp.textContent), sp);
       });
+      clearFrameHL();
       frameWords.length = 0;
-      document.querySelectorAll('.vox-word-active').forEach((el) => {
-        el.classList.remove('vox-word-active');
-      });
+      frameSentences.length = 0;
     }
 
     function wrapTextNode(node, start, end) {
@@ -146,6 +199,7 @@
       const d = ev.data;
       if (!d?.source) return;
       if (d.source === IFRAME_READ_MSG) {
+        applyFrameTheme(d);
         let range = null;
         try {
           const sel = window.getSelection();
@@ -156,6 +210,7 @@
           }
         } catch (_) {}
         const ok = range ? wrapFrameRange(range) : false;
+        if (ok) buildFrameSentences();
         try {
           window.top.postMessage({
             source: IFRAME_READ_OK,
@@ -166,14 +221,18 @@
         return;
       }
       if (d.source === IFRAME_HL_MSG) {
-        document.querySelectorAll('.vox-word-active').forEach((el) => {
-          el.classList.remove('vox-word-active');
-        });
+        clearFrameHL();
         if (typeof d.idx !== 'number' || d.idx < 0) return;
-        const w = frameWords[d.idx];
-        if (w?.el) {
-          w.el.classList.add('vox-word-active');
-          w.el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        const si = typeof d.sentenceIdx === 'number'
+          ? d.sentenceIdx
+          : getFrameSentenceIdx(d.idx);
+        placeFrameSentenceOverlays(si, d.highlightSentence !== false);
+        if (d.highlightWord !== false) {
+          const w = frameWords[d.idx];
+          if (w?.el) {
+            w.el.classList.add('vox-word-active');
+            w.el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+          }
         }
         return;
       }
@@ -382,6 +441,16 @@
     });
   }
 
+  function iframeThemePayload() {
+    return {
+      wordColor: S.wordColor,
+      sentenceHex: S.sentenceHex,
+      sentenceStyle: S.sentenceStyle,
+      highlightWord: S.highlightWord,
+      highlightSentence: S.highlightSentence,
+    };
+  }
+
   function requestIframeWords(text) {
     return new Promise((resolve) => {
       let best = null;
@@ -390,7 +459,7 @@
         if (ev.data.words?.length) best = ev.data.words;
       }
       window.addEventListener('message', onMsg);
-      broadcastToIframes({ source: IFRAME_READ_MSG, text });
+      broadcastToIframes({ source: IFRAME_READ_MSG, text, ...iframeThemePayload() });
       setTimeout(() => {
         window.removeEventListener('message', onMsg);
         resolve(best);
@@ -1084,12 +1153,25 @@
   function clearHL() {
     if (_activeWordEl) { _activeWordEl.classList.remove('vox-word-active'); _activeWordEl = null; }
     document.querySelectorAll('.vox-sentence-active').forEach(e => e.classList.remove('vox-sentence-active'));
-    if (S.iframeReadActive) broadcastToIframes({ source: IFRAME_HL_MSG, idx: -1 });
+    if (S.iframeReadActive) {
+      broadcastToIframes({
+        source: IFRAME_HL_MSG,
+        idx: -1,
+        ...iframeThemePayload(),
+      });
+    }
   }
 
   function highlightAt(idx) {
     if (S.iframeReadActive) {
-      broadcastToIframes({ source: IFRAME_HL_MSG, idx });
+      const si = getSentenceIdx(idx);
+      if (si !== S.currentSentence) S.currentSentence = si;
+      broadcastToIframes({
+        source: IFRAME_HL_MSG,
+        idx,
+        sentenceIdx: si,
+        ...iframeThemePayload(),
+      });
       updateProgress();
       return;
     }

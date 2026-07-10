@@ -126,6 +126,7 @@ test.describe('Vox Reader smoke', () => {
       await page.keyboard.press('Alt+r');
       await expect(page.locator('#vox-player')).toBeVisible({ timeout: 10_000 });
       await expect(page.locator('#vox-status')).toContainText(/Reading selection/i, { timeout: 10_000 });
+      await expect(frame.locator('.vox-word')).not.toHaveCount(0);
     } finally {
       await context.close();
     }
