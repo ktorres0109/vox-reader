@@ -261,6 +261,9 @@ chrome.runtime.onMessage.addListener((msg) => {
   }
 
   if (msg.action === 'kokoro_export') {
+    isPlaying = false;
+    generation++;
+    stopCurrentAudio();
     const exportGen = ++exportGeneration;
     if (msg.voice) currentVoice = msg.voice;
     exportWav(msg.sentences, msg.tabId, msg.speed || 1.0, msg.voice, exportGen)

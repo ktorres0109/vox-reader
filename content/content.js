@@ -186,13 +186,12 @@
   const CHAT_RESPONSE_SELECTORS = [
     ...ASSISTANT_MESSAGE_SELECTORS,
     '[data-testid*="assistant"]',
+    '[data-testid*="model-response"]',
     '[class*="model-response"]',
     '[class*="message-content"]',
     'message-content',
-    '[class*="markdown"]',
-    '[class*="prose"]',
-    '[class*="response"]',
-    'article',
+    '.agent-turn',
+    '.gemini-response',
   ];
 
   function isMathLikeText(text) {
@@ -1207,6 +1206,7 @@
     if (btn) btn.classList.add('active');
     stop(false); unwrap();
     wrapWords(document.getElementById('vox-immersive-content'));
+    syncPrintUI();
   }
 
   function exitImmersive() {
@@ -1215,7 +1215,48 @@
     S.immersiveActive = false;
     const btn = document.getElementById('vox-immersive-btn');
     if (btn) btn.classList.remove('active');
+    syncPrintUI();
     setStatus('Ready');
+  }
+
+  function printReadable() {
+    if (!S.immersiveActive) {
+      window.print();
+      return;
+    }
+    const content = document.getElementById('vox-immersive-content');
+    if (!content) {
+      window.print();
+      return;
+    }
+    const clone = content.cloneNode(true);
+    clone.querySelectorAll('.vox-word').forEach((sp) => {
+      sp.replaceWith(document.createTextNode(sp.textContent));
+    });
+    const frame = document.createElement('iframe');
+    frame.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0';
+    document.body.appendChild(frame);
+    const doc = frame.contentDocument;
+    doc.open();
+    doc.write(`<!DOCTYPE html><html><head><title>Vox Reader</title>
+<style>
+  body { font-family: Georgia, serif; max-width: 680px; margin: 2em auto; line-height: 1.75; color: #111; }
+  h1,h2,h3,h4 { margin-top: 1.4em; margin-bottom: 0.5em; }
+  p,li { margin-bottom: 1em; }
+  pre,code { font-family: ui-monospace, monospace; font-size: 0.9em; white-space: pre-wrap; }
+</style></head><body>`);
+    doc.write(clone.innerHTML);
+    doc.write('</body></html>');
+    doc.close();
+    frame.contentWindow.focus();
+    frame.contentWindow.print();
+    setTimeout(() => frame.remove(), 1000);
+  }
+
+  function syncPrintUI() {
+    const btn = document.getElementById('exp-pdf');
+    if (!btn) return;
+    btn.title = S.immersiveActive ? 'Print reader view' : 'Print this page';
   }
 
   // ── Audio export ───────────────────────────────────────────────────────────
@@ -1385,7 +1426,7 @@
   function createPlayer() {
     if (document.getElementById('vox-player')) {
       document.getElementById('vox-player').classList.remove('vox-hidden');
-      populateVoices(); populateKokoroVoices(); syncEngineUI(); syncInstallUI(); syncExportUI(); return;
+      populateVoices(); populateKokoroVoices(); syncEngineUI(); syncInstallUI(); syncExportUI(); syncPrintUI(); return;
     }
 
     const p = document.createElement('div');
@@ -1524,6 +1565,7 @@
     // Offscreen handles already-loaded case with `if (synthesizer) return`.
     startChatObserver();
     syncEngineUI();
+    syncPrintUI();
     if (S.voiceEngine === 'kokoro' && !S.kokoroModelCached) {
       startKokoroDownload();
     } else {
@@ -1696,7 +1738,7 @@
       savePrefs(); setStatus('Saved!');
     };
 
-    document.getElementById('exp-pdf').onclick = () => window.print();
+    document.getElementById('exp-pdf').onclick = () => printReadable();
     document.getElementById('exp-mp3').onclick = exportAudio;
 
     // Click-to-jump (only while speaking/paused)
@@ -1847,7 +1889,7 @@
       S.exporting = false;
       syncExportUI();
       try {
-        downloadWavBase64(msg.wavBase64);
+        downloadWavBase64(msg.wavBase64, `vox-reader-${S.kokoroVoice || 'kokoro'}.wav`);
         setStatus('WAV downloaded');
       } catch (e) {
         setStatus('Export failed — file too large?');

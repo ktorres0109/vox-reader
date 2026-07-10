@@ -121,6 +121,16 @@ async function routeKokoroAction(msg, tabId) {
     }
   }
 
+  if (msg.action === 'kokoro_export') {
+    if (kokoroActiveTabId) {
+      if (kokoroActiveTabId !== tabId) interruptKokoroTab(kokoroActiveTabId);
+      kokoroActiveTabId = null;
+    }
+    await sendToOffscreen({ action: 'kokoro_stop', tabId });
+    sendToOffscreen({ ...msg, tabId });
+    return;
+  }
+
   if (msg.action === 'kokoro_speak' && tabId) {
     if (kokoroActiveTabId && kokoroActiveTabId !== tabId) {
       interruptKokoroTab(kokoroActiveTabId);
