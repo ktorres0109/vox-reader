@@ -157,10 +157,10 @@ async function routeKokoroAction(msg, tabId) {
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
-  if (msg.action === 'kokoro_load' || msg.action === 'kokoro_speak' || msg.action === 'kokoro_stop' || msg.action === 'kokoro_warm_voice' || msg.action === 'kokoro_export' || msg.action === 'kokoro_export_cancel') {
+  if (msg.action === 'kokoro_load' || msg.action === 'kokoro_speak' || msg.action === 'kokoro_stop' || msg.action === 'kokoro_pause' || msg.action === 'kokoro_resume' || msg.action === 'kokoro_warm_voice' || msg.action === 'kokoro_export' || msg.action === 'kokoro_export_cancel') {
     const tabId = sender.tab?.id;
-    if (msg.action === 'kokoro_stop') {
-      if (tabId && kokoroActiveTabId === tabId) kokoroActiveTabId = null;
+    if (msg.action === 'kokoro_stop' || msg.action === 'kokoro_pause' || msg.action === 'kokoro_resume') {
+      if (msg.action === 'kokoro_stop' && tabId && kokoroActiveTabId === tabId) kokoroActiveTabId = null;
       chrome.offscreen.hasDocument()
         .then(ex => { if (ex) sendToOffscreen({ ...msg, tabId }); })
         .catch(() => {});

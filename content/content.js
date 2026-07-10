@@ -1019,13 +1019,19 @@
   function pauseResume() {
     if (S.paused) {
       S.paused = false;
-      speakFrom(S.currentWord, S.speakEndIdx);
+      if (S.voiceEngine === 'kokoro') {
+        sendMsg({ action: 'kokoro_resume' });
+        setStatus('Playing', true);
+      } else {
+        speakFrom(S.currentWord, S.speakEndIdx);
+      }
+      updatePlayBtn();
       return;
     }
     if (!S.speaking) return;
     stopTicker();
     if (S.voiceEngine === 'kokoro') {
-      sendMsg({ action: 'kokoro_stop' });
+      sendMsg({ action: 'kokoro_pause' });
     } else {
       window.speechSynthesis.cancel();
     }
