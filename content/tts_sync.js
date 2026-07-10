@@ -2,6 +2,7 @@
 // Disabled by default; enable in Vox Reader Settings → KReader sync.
 
 (() => {
+  if (window.self !== window.top) return;
   if (window.__voxKreaderSyncLoaded) return;
   window.__voxKreaderSyncLoaded = true;
 

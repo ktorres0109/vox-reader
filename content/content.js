@@ -1,6 +1,27 @@
 // Vox Reader v3 — content script
 
 (function () {
+  const IFRAME_SEL_MSG = 'vox-reader-iframe-selection';
+  const isTopFrame = window.self === window.top;
+
+  // Child frames: forward text selection to the top frame (cross-origin safe).
+  if (!isTopFrame) {
+    if (window.__voxReaderFrameBridge) return;
+    window.__voxReaderFrameBridge = true;
+    function publishFrameSelection() {
+      let text = '';
+      try {
+        text = (window.getSelection()?.toString() || '').trim();
+      } catch (_) {}
+      try {
+        window.top.postMessage({ source: IFRAME_SEL_MSG, text }, '*');
+      } catch (_) {}
+    }
+    document.addEventListener('selectionchange', publishFrameSelection);
+    publishFrameSelection();
+    return;
+  }
+
   if (window.__voxReaderLoaded) return;
   window.__voxReaderLoaded = true;
 
@@ -73,6 +94,15 @@
     speakEndIdx: null,            // when set, stop reading at this word index
     _voxDomUpdate: false,         // true while wrap/unwrap mutates the page
   };
+
+  let frameSelection = { text: '', at: 0 };
+  const FRAME_SEL_TTL_MS = 5000;
+
+  window.addEventListener('message', (ev) => {
+    if (!ev.data || ev.data.source !== IFRAME_SEL_MSG) return;
+    if (typeof ev.data.text !== 'string') return;
+    frameSelection = { text: ev.data.text.trim(), at: Date.now() };
+  });
 
   const KOKORO_VOICES = [
     { id: 'af_bella',   label: 'Bella (Female) — default' },
@@ -1118,9 +1148,13 @@
       const frame = document.activeElement;
       if (frame?.tagName === 'IFRAME' && frame.contentDocument) {
         text = frame.contentDocument.getSelection()?.toString().trim() || '';
+        if (text) return text;
       }
     } catch (_) { /* cross-origin iframe */ }
-    return text;
+    if (frameSelection.text && Date.now() - frameSelection.at < FRAME_SEL_TTL_MS) {
+      return frameSelection.text;
+    }
+    return '';
   }
 
   function getSelectionRange() {
