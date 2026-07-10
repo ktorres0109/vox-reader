@@ -2,6 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 node tools/wav.test.mjs
+node tools/chat-read-scope.test.mjs
 node tools/export-range.test.mjs
 node tools/mp3.test.mjs
 node tools/sentences.test.mjs

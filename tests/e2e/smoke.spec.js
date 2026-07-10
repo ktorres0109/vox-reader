@@ -8,6 +8,7 @@ import { unpackedExtensionId } from '../../tools/extension-id.mjs';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const extensionPath = root;
 const fixturePage = path.join(root, 'tests/fixtures/article.html');
+const chatFixturePage = path.join(root, 'tests/fixtures/chat.html');
 
 async function waitForExtensionServiceWorker(context, timeoutMs = 30_000) {
   const deadline = Date.now() + timeoutMs;
@@ -124,6 +125,60 @@ test.describe('Vox Reader smoke', () => {
       await page.keyboard.press('Alt+r');
       await expect(page.locator('#vox-player')).toBeVisible({ timeout: 10_000 });
       await expect(page.locator('#vox-status')).toContainText(/Reading selection/i, { timeout: 10_000 });
+    } finally {
+      await context.close();
+    }
+  });
+
+  test('player shows export scope and format controls', async () => {
+    const launched = await launchWithExtension();
+    if (!launched) test.skip(true, 'Chrome extension host unavailable');
+    const { context } = launched;
+    try {
+      const page = await context.newPage();
+      await page.goto(`file://${fixturePage}`);
+      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.keyboard.press('Alt+p');
+      await expect(page.locator('#vox-player')).toBeVisible({ timeout: 10_000 });
+      await page.locator('#vox-settings-btn').click();
+      await expect(page.locator('#export-scope')).toBeVisible();
+      await expect(page.locator('#export-format')).toBeVisible();
+      await expect(page.locator('#export-bitrate')).toBeVisible();
+    } finally {
+      await context.close();
+    }
+  });
+
+  test('export selection scope prompts when nothing is selected', async () => {
+    const launched = await launchWithExtension();
+    if (!launched) test.skip(true, 'Chrome extension host unavailable');
+    const { context } = launched;
+    try {
+      const page = await context.newPage();
+      await page.goto(`file://${fixturePage}`);
+      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.keyboard.press('Alt+p');
+      await page.locator('#vox-settings-btn').click();
+      await page.selectOption('#export-scope', 'selection');
+      await page.locator('#exp-mp3').click();
+      await expect(page.locator('#vox-status')).toContainText(/Select text on the page first/i, { timeout: 10_000 });
+    } finally {
+      await context.close();
+    }
+  });
+
+  test('chat fixture shows reply scope controls', async () => {
+    const launched = await launchWithExtension();
+    if (!launched) test.skip(true, 'Chrome extension host unavailable');
+    const { context } = launched;
+    try {
+      const page = await context.newPage();
+      await page.goto(`file://${chatFixturePage}`);
+      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.keyboard.press('Alt+p');
+      await page.locator('#vox-settings-btn').click();
+      await expect(page.locator('#vox-chat-read-section')).toBeVisible();
+      await expect(page.locator('#chat-read-scope')).toBeVisible();
     } finally {
       await context.close();
     }

@@ -16,6 +16,9 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Fetch vendor bundles
+        run: npm run fetch-deps
+
       - name: Run unit tests
         run: npm test
 
