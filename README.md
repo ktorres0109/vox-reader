@@ -163,7 +163,7 @@ vox-reader/
 | Export queued | Stop or click **Cancel** on Export to abort download/export |
 | Only last chat reply read | Update extension — reads all assistant messages |
 | `kokoro.web.js` missing | `bash tools/fetch-deps.sh` |
-| Export fails | Try shorter selection; check Downloads permission; first export downloads AI voice once |
+| Export fails | Try shorter selection; if blocked, a Save dialog appears on retry |
 | KReader highlights | Enable **Settings → KReader sync** |
 
 ---

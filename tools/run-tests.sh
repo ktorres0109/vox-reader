@@ -8,6 +8,7 @@ node tools/mp3.test.mjs
 node tools/sentences.test.mjs
 node tools/extension-id.test.mjs
 node tools/pack.test.mjs
+node tools/download.test.mjs
 node tools/manifest-commands.test.mjs
 node tools/check-store-ready.test.mjs
 node tools/validate-extension.mjs

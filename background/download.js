@@ -11,15 +11,22 @@ function downloadAudioBlob(bytes, filename, mimeType = 'application/octet-stream
   return new Promise((resolve, reject) => {
     const blob = new Blob([bytes], { type: mimeType });
     const url = URL.createObjectURL(blob);
-    chrome.downloads.download({ url, filename, saveAs: false }, (id) => {
-      if (chrome.runtime.lastError || id === undefined) {
-        URL.revokeObjectURL(url);
-        reject(new Error(chrome.runtime.lastError?.message || 'Download failed'));
-        return;
-      }
-      setTimeout(() => URL.revokeObjectURL(url), 120_000);
-      resolve(id);
-    });
+    const tryDownload = (saveAs) => {
+      chrome.downloads.download({ url, filename, saveAs }, (id) => {
+        if (chrome.runtime.lastError || id === undefined) {
+          if (!saveAs) {
+            tryDownload(true);
+            return;
+          }
+          URL.revokeObjectURL(url);
+          reject(new Error(chrome.runtime.lastError?.message || 'Download failed'));
+          return;
+        }
+        setTimeout(() => URL.revokeObjectURL(url), 120_000);
+        resolve(id);
+      });
+    };
+    tryDownload(false);
   });
 }
 

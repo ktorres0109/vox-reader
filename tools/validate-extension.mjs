@@ -11,6 +11,7 @@ assert.equal(manifest.manifest_version, 3);
 assert.ok(manifest.version, 'manifest version required');
 assert.ok(manifest.background?.service_worker);
 assert.ok(manifest.commands?.['toggle-player'], 'manifest commands required');
+assert.ok(manifest.icons?.['128'], 'manifest icons required');
 
 const required = [
   'background/service_worker.js',
