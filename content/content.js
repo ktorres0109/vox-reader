@@ -2,12 +2,19 @@
 
 (function () {
   const IFRAME_SEL_MSG = 'vox-reader-iframe-selection';
+  const IFRAME_READ_MSG = 'vox-reader-iframe-read';
+  const IFRAME_READ_OK = 'vox-reader-iframe-read-ready';
+  const IFRAME_HL_MSG = 'vox-reader-iframe-highlight';
+  const IFRAME_CLEAR_MSG = 'vox-reader-iframe-clear';
   const isTopFrame = window.self === window.top;
 
-  // Child frames: forward text selection to the top frame (cross-origin safe).
+  // Child frames: selection bridge + local wrap/highlight for cross-origin reads.
   if (!isTopFrame) {
     if (window.__voxReaderFrameBridge) return;
     window.__voxReaderFrameBridge = true;
+
+    const frameWords = [];
+
     function publishFrameSelection() {
       let text = '';
       try {
@@ -17,6 +24,164 @@
         window.top.postMessage({ source: IFRAME_SEL_MSG, text }, '*');
       } catch (_) {}
     }
+
+    function unwrapFrame() {
+      document.querySelectorAll('.vox-word').forEach((sp) => {
+        sp.parentNode?.replaceChild(document.createTextNode(sp.textContent), sp);
+      });
+      frameWords.length = 0;
+      document.querySelectorAll('.vox-word-active').forEach((el) => {
+        el.classList.remove('vox-word-active');
+      });
+    }
+
+    function wrapTextNode(node, start, end) {
+      const full = node.textContent;
+      const parent = node.parentNode;
+      if (!parent) return;
+      const frag = document.createDocumentFragment();
+      if (start > 0) frag.appendChild(document.createTextNode(full.slice(0, start)));
+      const middle = full.slice(start, end);
+      const re = /(\S+|\s+)/g;
+      let m;
+      while ((m = re.exec(middle)) !== null) {
+        if (/\S/.test(m[0])) {
+          const span = document.createElement('span');
+          span.className = 'vox-word';
+          span.textContent = m[0];
+          span.dataset.voxIndex = String(frameWords.length);
+          frameWords.push({ el: span, text: m[0] });
+          frag.appendChild(span);
+        } else {
+          frag.appendChild(document.createTextNode(m[0]));
+        }
+      }
+      if (end < full.length) frag.appendChild(document.createTextNode(full.slice(end)));
+      parent.replaceChild(frag, node);
+    }
+
+    function wrapFrameRange(range) {
+      if (!range || range.collapsed) return false;
+      unwrapFrame();
+      const root = range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
+        ? range.commonAncestorContainer
+        : range.commonAncestorContainer.parentElement;
+      if (!root) return false;
+
+      const textNodes = [];
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+        acceptNode(node) {
+          if (!node.textContent.trim()) return NodeFilter.FILTER_REJECT;
+          try {
+            return range.intersectsNode(node) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+          } catch (_) {
+            return NodeFilter.FILTER_REJECT;
+          }
+        },
+      });
+      let n;
+      while ((n = walker.nextNode())) textNodes.push(n);
+
+      textNodes.forEach((node) => {
+        const full = node.textContent;
+        let start = 0;
+        let end = full.length;
+        if (range.startContainer === node) start = range.startOffset;
+        if (range.endContainer === node) end = range.endOffset;
+        if (start < end) wrapTextNode(node, start, end);
+      });
+      return frameWords.length > 0;
+    }
+
+    function normText(s) {
+      return (s || '').replace(/\s+/g, ' ').trim();
+    }
+
+    function findRangeForText(text) {
+      const needle = normText(text);
+      if (!needle) return null;
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      let node;
+      let acc = '';
+      const map = [];
+      while ((node = walker.nextNode())) {
+        if (!node.textContent.trim()) continue;
+        const start = acc.length;
+        acc += node.textContent;
+        map.push({ node, start, end: acc.length });
+        acc += ' ';
+      }
+      const hay = normText(acc);
+      const pos = hay.indexOf(needle);
+      if (pos < 0) return null;
+      const endPos = pos + needle.length;
+      let startNode = null;
+      let endNode = null;
+      let startOff = 0;
+      let endOff = 0;
+      for (const entry of map) {
+        const ns = normText(acc.slice(0, entry.start)).length;
+        const ne = normText(acc.slice(0, entry.end)).length;
+        if (startNode == null && pos >= ns && pos <= ne) {
+          startNode = entry.node;
+          startOff = Math.max(0, pos - ns);
+        }
+        if (endPos >= ns && endPos <= ne) {
+          endNode = entry.node;
+          endOff = Math.max(0, endPos - ns);
+        }
+      }
+      if (!startNode || !endNode) return null;
+      const range = document.createRange();
+      try {
+        range.setStart(startNode, Math.min(startOff, startNode.length));
+        range.setEnd(endNode, Math.min(endOff, endNode.length));
+        return range;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    window.addEventListener('message', (ev) => {
+      const d = ev.data;
+      if (!d?.source) return;
+      if (d.source === IFRAME_READ_MSG) {
+        let range = null;
+        try {
+          const sel = window.getSelection();
+          if (sel?.rangeCount && normText(sel.toString()) === normText(d.text)) {
+            range = sel.getRangeAt(0).cloneRange();
+          } else {
+            range = findRangeForText(d.text);
+          }
+        } catch (_) {}
+        const ok = range ? wrapFrameRange(range) : false;
+        try {
+          window.top.postMessage({
+            source: IFRAME_READ_OK,
+            ok,
+            words: frameWords.map((w) => w.text),
+          }, '*');
+        } catch (_) {}
+        return;
+      }
+      if (d.source === IFRAME_HL_MSG) {
+        document.querySelectorAll('.vox-word-active').forEach((el) => {
+          el.classList.remove('vox-word-active');
+        });
+        if (typeof d.idx !== 'number' || d.idx < 0) return;
+        const w = frameWords[d.idx];
+        if (w?.el) {
+          w.el.classList.add('vox-word-active');
+          w.el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        }
+        return;
+      }
+      if (d.source === IFRAME_CLEAR_MSG) {
+        unwrapFrame();
+      }
+    });
+
     document.addEventListener('selectionchange', publishFrameSelection);
     publishFrameSelection();
     return;
@@ -97,6 +262,7 @@
     chatDomDirty: false,          // chat DOM changed since last wrap
     chatReadScope: 'all',         // all | latest | single (chat sites)
     chatReadIndex: 0,
+    iframeReadActive: false,
     speakEndIdx: null,            // when set, stop reading at this word index
     _voxDomUpdate: false,         // true while wrap/unwrap mutates the page
   };
@@ -208,6 +374,45 @@
 
   function shortcutKeyMatches(e, key) {
     return e.key.toLowerCase() === (key || '').toLowerCase();
+  }
+
+  function broadcastToIframes(payload) {
+    document.querySelectorAll('iframe').forEach((f) => {
+      try { f.contentWindow?.postMessage(payload, '*'); } catch (_) {}
+    });
+  }
+
+  function requestIframeWords(text) {
+    return new Promise((resolve) => {
+      let best = null;
+      function onMsg(ev) {
+        if (ev.data?.source !== IFRAME_READ_OK) return;
+        if (ev.data.words?.length) best = ev.data.words;
+      }
+      window.addEventListener('message', onMsg);
+      broadcastToIframes({ source: IFRAME_READ_MSG, text });
+      setTimeout(() => {
+        window.removeEventListener('message', onMsg);
+        resolve(best);
+      }, 700);
+    });
+  }
+
+  async function tryIframeSelectionRead(text) {
+    const words = await requestIframeWords(text);
+    if (!words?.length) return false;
+    S.iframeReadActive = true;
+    S.words = words.map((t) => ({ text: t, el: null }));
+    buildSentences();
+    setStatus('Reading selection…', true);
+    speakFrom(0, S.words.length - 1);
+    return true;
+  }
+
+  function clearIframeHighlights() {
+    if (!S.iframeReadActive) return;
+    broadcastToIframes({ source: IFRAME_CLEAR_MSG });
+    S.iframeReadActive = false;
   }
 
   // ── DOM helpers ────────────────────────────────────────────────────────────
@@ -847,6 +1052,7 @@
 
   function unwrap() {
     S._voxDomUpdate = true;
+    clearIframeHighlights();
     document.querySelectorAll('.vox-word').forEach(sp =>
       sp.parentNode.replaceChild(document.createTextNode(sp.textContent), sp));
     S.words = []; S.sentences = []; clearHL();
@@ -878,9 +1084,15 @@
   function clearHL() {
     if (_activeWordEl) { _activeWordEl.classList.remove('vox-word-active'); _activeWordEl = null; }
     document.querySelectorAll('.vox-sentence-active').forEach(e => e.classList.remove('vox-sentence-active'));
+    if (S.iframeReadActive) broadcastToIframes({ source: IFRAME_HL_MSG, idx: -1 });
   }
 
   function highlightAt(idx) {
+    if (S.iframeReadActive) {
+      broadcastToIframes({ source: IFRAME_HL_MSG, idx });
+      updateProgress();
+      return;
+    }
     if (S.words[idx]?.el && !S.words[idx].el.isConnected) {
       scheduleChatPlaybackSync();
       return;
@@ -1102,6 +1314,7 @@
   }
 
   function stop(reset = false) {
+    const wasPendingExport = S.pendingExport && !S.speaking && !S.exporting;
     if (S.exporting) {
       sendMsg({ action: 'kokoro_export_cancel' });
       S.exporting = false;
@@ -1114,10 +1327,13 @@
       window.speechSynthesis.cancel();
     }
     stopTicker(); clearHL();
+    clearIframeHighlights();
     S.speaking = false; S.paused = false; S.speakEndIdx = null;
     if (reset) S.currentWord = 0;
     document.documentElement.classList.remove('vox-reading');
-    updatePlayBtn(); setStatus('Stopped'); savePrefs();
+    updatePlayBtn();
+    setStatus(wasPendingExport ? 'Export cancelled' : 'Stopped');
+    savePrefs();
   }
 
   function skipBack() {
@@ -1225,6 +1441,8 @@
       speakFrom(0, endIdx);
       return;
     }
+
+    if (await tryIframeSelectionRead(text)) return;
 
     await prepareAndRewrap(() => {
       const idx = findWordIdxForText(text);
@@ -2135,6 +2353,7 @@
 
     if (msg.action === 'kokoro_end') {
       stopTicker(); clearHL();
+      clearIframeHighlights();
       S.speaking = false; S.paused = false; S.speakEndIdx = null;
       document.documentElement.classList.remove('vox-reading');
       updatePlayBtn(); setStatus('Done'); S.currentWord = 0;

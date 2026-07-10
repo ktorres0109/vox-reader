@@ -7,5 +7,6 @@ vendor/
 vendor/models/
 node_modules/
 store-assets/
+dist/
 test-results/
 playwright-report/

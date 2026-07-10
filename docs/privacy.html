@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Vox Reader — Privacy Policy</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1.25rem; line-height: 1.65; color: #222; }
+    h1 { font-size: 1.75rem; }
+    h2 { font-size: 1.1rem; margin-top: 1.75rem; }
+    table { border-collapse: collapse; width: 100%; font-size: 0.95rem; }
+    th, td { border: 1px solid #ddd; padding: 0.5rem 0.65rem; text-align: left; vertical-align: top; }
+    th { background: #f6f6f6; }
+    a { color: #b45309; }
+  </style>
+</head>
+<body>
+  <h1>Vox Reader — Privacy Policy</h1>
+  <p><strong>Last updated:</strong> July 2026</p>
+  <p>Vox Reader reads web pages aloud with highlighting. <strong>Processing happens on your device.</strong> We do not collect, sell, or transmit your reading data to Vox Reader servers.</p>
+
+  <h2>On-device data</h2>
+  <ul>
+    <li>Page text you choose to read</li>
+    <li>Preferences (speed, voice, colors) via Chrome Sync if enabled</li>
+    <li>Kokoro AI model cache in extension local storage</li>
+  </ul>
+
+  <h2>Network use</h2>
+  <p>The extension may download the Kokoro model and voice files from Hugging Face when you enable or export with the AI voice. No page content is sent for cloud TTS.</p>
+
+  <h2>Optional KReader sync</h2>
+  <p>When enabled, the extension contacts <code>127.0.0.1:8766</code> on your computer only. Off by default.</p>
+
+  <h2>Permissions</h2>
+  <table>
+    <tr><th>Permission</th><th>Purpose</th></tr>
+    <tr><td>storage</td><td>Save settings and model cache</td></tr>
+    <tr><td>activeTab / scripting</td><td>Highlight and read pages you open</td></tr>
+    <tr><td>offscreen</td><td>On-device AI speech</td></tr>
+    <tr><td>downloads</td><td>Save MP3/WAV exports</td></tr>
+    <tr><td>contextMenus</td><td>Read selection menu item</td></tr>
+    <tr><td>&lt;all_urls&gt;</td><td>User-initiated reading on sites you visit</td></tr>
+  </table>
+
+  <h2>Contact</h2>
+  <p><a href="https://github.com/ktorres0109/vox-reader">github.com/ktorres0109/vox-reader</a></p>
+</body>
+</html>
