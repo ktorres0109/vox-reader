@@ -74,9 +74,7 @@ Fallback: `https://github.com/ktorres0109/vox-reader/blob/main/PRIVACY.md`
 
 ## Checklist before submit
 
-- [ ] Run `npm run fetch-deps` before packing
-- [ ] Bump `manifest.json` version
-- [ ] Run `npm run pack` → upload `dist/vox-reader.zip`
+- [ ] Run `npm run pack:store` → upload `dist/vox-reader.zip` (fetch-deps + strict vendor check)
 - [ ] Upload icons 128×128 (already in `icons/`)
 - [ ] Privacy policy URL live
 - [ ] Test on clean Chrome profile
