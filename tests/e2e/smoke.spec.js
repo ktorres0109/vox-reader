@@ -183,6 +183,56 @@ test.describe('Vox Reader smoke', () => {
     }
   });
 
+  test('install Cancel stops Kokoro download panel', async () => {
+    const launched = await launchWithExtension();
+    if (!launched) test.skip(true, 'Chrome extension host unavailable');
+    const { context } = launched;
+    try {
+      const page = await context.newPage();
+      await page.goto(`file://${fixturePage}`);
+      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.keyboard.press('Alt+p');
+      await expect(page.locator('#vox-kokoro-install')).toBeVisible({ timeout: 15_000 });
+      await expect(page.locator('#vox-install-cancel')).toBeVisible({ timeout: 10_000 });
+      await page.locator('#vox-install-cancel').click();
+      await expect(page.locator('#vox-status')).toContainText(/cancelled/i, { timeout: 10_000 });
+      await expect(page.locator('#vox-install-cancel')).toBeHidden({ timeout: 5_000 });
+    } finally {
+      await context.close();
+    }
+  });
+
+  test('Alt+E opens player and queues export download', async () => {
+    const launched = await launchWithExtension();
+    if (!launched) test.skip(true, 'Chrome extension host unavailable');
+    const { context } = launched;
+    try {
+      const page = await context.newPage();
+      await page.goto(`file://${fixturePage}`);
+      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.keyboard.press('Alt+e');
+      await expect(page.locator('#vox-player')).toBeVisible({ timeout: 10_000 });
+      await expect(page.locator('#exp-mp3')).toHaveText('Cancel', { timeout: 10_000 });
+      await expect(page.locator('#vox-status')).toContainText(/download/i, { timeout: 10_000 });
+    } finally {
+      await context.close();
+    }
+  });
+
+  test('popup shows version and privacy link', async () => {
+    const launched = await launchWithExtension();
+    if (!launched) test.skip(true, 'Chrome extension host unavailable');
+    const { context, extensionId } = launched;
+    try {
+      const popup = await context.newPage();
+      await popup.goto(`chrome-extension://${extensionId}/popup/popup.html`);
+      await expect(popup.locator('#popup-version')).toContainText(/v\d+\.\d+/);
+      await expect(popup.locator('#privacy-link')).toBeVisible();
+    } finally {
+      await context.close();
+    }
+  });
+
   test('iframe sentence highlights during classic playback', async () => {
     const launched = await launchWithExtension();
     if (!launched) test.skip(true, 'Chrome extension host unavailable');

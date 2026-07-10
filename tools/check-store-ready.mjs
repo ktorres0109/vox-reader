@@ -28,6 +28,9 @@ for (const doc of ['docs/privacy.html', 'docs/index.html', 'STORE_LISTING.md', '
 const listing = fs.readFileSync(path.join(root, 'STORE_LISTING.md'), 'utf8');
 assert.match(listing, /github\.io\/vox-reader\/privacy\.html/, 'STORE_LISTING privacy URL should point at GitHub Pages');
 
+const popupHtml = fs.readFileSync(path.join(root, 'popup/popup.html'), 'utf8');
+assert.match(popupHtml, /privacy-link/, 'popup should link to privacy policy');
+
 const vendorFiles = [
   'vendor/kokoro.web.js',
   'vendor/lame.min.js',

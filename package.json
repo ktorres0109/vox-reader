@@ -1,6 +1,6 @@
 {
   "name": "vox-reader",
-  "version": "2.4.9",
+  "version": "2.5.0",
   "private": true,
   "type": "module",
   "description": "Chrome extension — read webpages aloud with word highlighting",
