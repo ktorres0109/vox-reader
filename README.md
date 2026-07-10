@@ -26,7 +26,7 @@ Vox Reader is a free Chrome extension that highlights words and sentences as it 
 ## Features
 
 - **Bella AI voice (default)** — Kokoro 82M neural TTS; American + British voices
-- **MP3 + WAV export** — download narration as `vox-reader-{voice}.mp3` (default) or `.wav` (Kokoro engine)
+- **MP3 + WAV export** — scope: all / selection / from here; MP3 bitrates 96–192 kbps
 - **Word-by-word highlighting** synced to speech
 - **Sentence highlighting** — background fill or underline, custom colors
 - **Chat-aware reading** — ChatGPT, Claude, Gemini; all assistant replies in order

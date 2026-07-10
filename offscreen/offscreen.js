@@ -237,7 +237,7 @@ function resumePlayback() {
   runSentenceLoop(sentences, tabId, gen, speed, voice, sentenceIndex, offsetSec);
 }
 
-async function exportAudio(sentences, tabId, speed, voice, exportGen, filename, format = 'wav') {
+async function exportAudio(sentences, tabId, speed, voice, exportGen, filename, format = 'wav', mp3Bitrate = 128) {
   if (!tts) {
     await loadModel(tabId, voice);
   }
@@ -280,7 +280,8 @@ async function exportAudio(sentences, tabId, speed, voice, exportGen, filename, 
     }
 
     const useMp3 = format === 'mp3';
-    const audioBuffer = useMp3 ? encodeMp3(merged, sr) : encodeWav(merged, sr);
+    const kbps = [96, 128, 192].includes(mp3Bitrate) ? mp3Bitrate : 128;
+    const audioBuffer = useMp3 ? encodeMp3(merged, sr, kbps) : encodeWav(merged, sr);
     const ext = useMp3 ? 'mp3' : 'wav';
     send({
       action: 'kokoro_export_ready',
@@ -364,7 +365,7 @@ chrome.runtime.onMessage.addListener((msg) => {
     clearLoopState();
     const exportGen = ++exportGeneration;
     if (msg.voice) currentVoice = msg.voice;
-    exportAudio(msg.sentences, msg.tabId, msg.speed || 1.0, msg.voice, exportGen, msg.filename, msg.format || 'wav')
+    exportAudio(msg.sentences, msg.tabId, msg.speed || 1.0, msg.voice, exportGen, msg.filename, msg.format || 'wav', msg.mp3Bitrate || 128)
       .catch((err) => send({ action: 'kokoro_export_error', error: err.message, tabId: msg.tabId }));
     return;
   }
