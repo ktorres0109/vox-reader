@@ -476,6 +476,90 @@ test.describe('Vox Reader smoke', () => {
     }
   });
 
+  test('click-to-jump seeks during classic playback', async () => {
+    const launched = await launchWithExtension();
+    if (!launched) test.skip(true, 'Chrome extension host unavailable');
+    const { context } = launched;
+    try {
+      const page = await context.newPage();
+      await page.goto(`file://${fixturePage}`);
+      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.keyboard.press('Alt+p');
+      await page.locator('#vox-settings-btn').click();
+      await page.locator('#eng-classic').click();
+      await page.locator('#vox-settings-close').click();
+      await page.locator('#vox-playpause-bar').click();
+      await expect(page.locator('#vox-status')).toContainText(/Playing/i, { timeout: 10_000 });
+      await page.waitForFunction(
+        () => document.querySelectorAll('article .vox-word').length > 8,
+        null,
+        { timeout: 15_000 },
+      );
+      const target = page.locator('article .vox-word').nth(8);
+      await target.click();
+      await expect(target).toHaveClass(/vox-word-active/, { timeout: 8_000 });
+    } finally {
+      await context.close();
+    }
+  });
+
+  test('skip forward advances highlight while paused', async () => {
+    const launched = await launchWithExtension();
+    if (!launched) test.skip(true, 'Chrome extension host unavailable');
+    const { context } = launched;
+    try {
+      const page = await context.newPage();
+      await page.goto(`file://${fixturePage}`);
+      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.keyboard.press('Alt+p');
+      await page.locator('#vox-settings-btn').click();
+      await page.locator('#eng-classic').click();
+      await page.locator('#vox-settings-close').click();
+      await page.locator('#vox-playpause-bar').click();
+      await expect(page.locator('#vox-status')).toContainText(/Playing/i, { timeout: 10_000 });
+      await page.waitForFunction(
+        () => document.querySelectorAll('article .vox-word').length > 0,
+        null,
+        { timeout: 15_000 },
+      );
+      await page.keyboard.press('Alt+p');
+      await expect(page.locator('#vox-status')).toContainText(/Paused/i, { timeout: 8_000 });
+      const beforeIdx = await page.locator('article .vox-word-active').first().getAttribute('data-vox-index');
+      await page.locator('#vox-fwd-bar').click();
+      await expect.poll(async () => {
+        const idx = await page.locator('article .vox-word-active').first().getAttribute('data-vox-index');
+        return idx !== beforeIdx;
+      }).toBe(true);
+    } finally {
+      await context.close();
+    }
+  });
+
+  test('word highlight toggle disables active word styling', async () => {
+    const launched = await launchWithExtension();
+    if (!launched) test.skip(true, 'Chrome extension host unavailable');
+    const { context } = launched;
+    try {
+      const page = await context.newPage();
+      await page.goto(`file://${fixturePage}`);
+      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.keyboard.press('Alt+p');
+      await page.locator('#vox-settings-btn').click();
+      await page.locator('#eng-classic').click();
+      const wordToggle = page.locator('#tog-word');
+      if (await wordToggle.evaluate((el) => el.classList.contains('on'))) {
+        await wordToggle.click();
+      }
+      await page.locator('#vox-settings-close').click();
+      await page.locator('#vox-playpause-bar').click();
+      await expect(page.locator('#vox-status')).toContainText(/Playing/i, { timeout: 10_000 });
+      await page.waitForTimeout(800);
+      await expect(page.locator('article .vox-word-active')).toHaveCount(0);
+    } finally {
+      await context.close();
+    }
+  });
+
   test('chat fixture shows reply scope controls', async () => {
     const launched = await launchWithExtension();
     if (!launched) test.skip(true, 'Chrome extension host unavailable');

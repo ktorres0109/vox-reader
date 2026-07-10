@@ -14,6 +14,7 @@ const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
 
 assert.equal(manifest.version, pkg.version, 'manifest and package.json versions must match');
 assert.ok(manifest.minimum_chrome_version, 'minimum_chrome_version required');
+assert.equal(manifest.short_name, 'Vox Reader', 'short_name required for store listing');
 
 for (const size of [16, 48, 128]) {
   const icon = path.join(root, `icons/icon${size}.png`);
@@ -40,8 +41,10 @@ for (const size of ['16', '48', '128']) {
 }
 
 const privacyHtml = fs.readFileSync(path.join(root, 'docs/privacy.html'), 'utf8');
+const privacyMd = fs.readFileSync(path.join(root, 'PRIVACY.md'), 'utf8');
 const versionPattern = new RegExp(`v${manifest.version.replace(/\./g, '\\.')}`);
 assert.match(privacyHtml, versionPattern, 'docs/privacy.html should reference current extension version');
+assert.match(privacyMd, versionPattern, 'PRIVACY.md should reference current extension version');
 
 const vendorFiles = [
   'vendor/kokoro.web.js',
