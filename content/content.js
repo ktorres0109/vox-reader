@@ -2446,6 +2446,24 @@
       return;
     }
 
+    if (msg.action === 'command_play_pause') {
+      ensurePlayerReady(() => {
+        if (!S.speaking && !S.paused) document.getElementById('vox-playpause-bar')?.click();
+        else pauseResume();
+      });
+      return;
+    }
+
+    if (msg.action === 'command_stop') {
+      stop(true);
+      return;
+    }
+
+    if (msg.action === 'command_export') {
+      ensurePlayerReady(() => { exportAudio(); });
+      return;
+    }
+
     if (msg.action === 'kokoro_interrupted') {
       stopTicker(); clearHL();
       S.speaking = false; S.paused = false;

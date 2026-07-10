@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Vox Reader",
-  "version": "2.5.0",
+  "version": "2.5.1",
   "minimum_chrome_version": "116",
   "description": "Read any webpage aloud with word highlighting. Default AI voice: Bella (Kokoro 82M). Free, private, works on ChatGPT, Claude, and Gemini.",
   "permissions": [
@@ -27,6 +27,36 @@
       "16": "icons/icon16.png",
       "48": "icons/icon48.png",
       "128": "icons/icon128.png"
+    }
+  },
+  "commands": {
+    "toggle-player": {
+      "suggested_key": {
+        "default": "Alt+P",
+        "mac": "Alt+P"
+      },
+      "description": "Open player / play or pause"
+    },
+    "stop-reading": {
+      "suggested_key": {
+        "default": "Alt+S",
+        "mac": "Alt+S"
+      },
+      "description": "Stop reading"
+    },
+    "read-selection": {
+      "suggested_key": {
+        "default": "Alt+R",
+        "mac": "Alt+R"
+      },
+      "description": "Read selected text"
+    },
+    "export-audio": {
+      "suggested_key": {
+        "default": "Alt+E",
+        "mac": "Alt+E"
+      },
+      "description": "Export audio (MP3/WAV)"
     }
   },
   "content_scripts": [

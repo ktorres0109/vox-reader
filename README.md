@@ -38,7 +38,7 @@ Vox Reader is a free Chrome extension that highlights words and sentences as it 
 - **Selection reading** — popup, context menu, or **Alt+R** (including cross-origin iframes with in-frame word + sentence highlighting)
 - **Click-to-jump** — click any word while playing to seek
 - **Speed control** — 0.5× to 3.0× (Kokoro + Classic)
-- **Keyboard shortcuts** — fully customizable; **Alt+P** works before opening player
+- **Keyboard shortcuts** — fully customizable; **Alt+P** works before opening player; also listed at `chrome://extensions/shortcuts`
 - **Settings sync** — preferences follow you via Chrome Sync
 - **KReader sync** (optional) — highlight sync with local KReader mac app
 - **Accessible** — ARIA labels, live regions, focus indicators
@@ -174,7 +174,7 @@ Vox Reader processes text **on your device**. See [PRIVACY.md](PRIVACY.md) for t
 
 ## Chrome Web Store
 
-Listing copy and screenshot checklist: [STORE_LISTING.md](STORE_LISTING.md). Run `npm run check:store` before submit. Capture screenshots with `npm run capture:store`. Pack for upload with `npm run pack:store` → `dist/vox-reader.zip`.
+Listing copy and screenshot checklist: [STORE_LISTING.md](STORE_LISTING.md). Run `npm run check:store` before submit. One-command release build: `npm run release:store` → `dist/vox-reader.zip`. Capture screenshots with `npm run capture:store`.
 
 Privacy page for store URL: [docs/privacy.html](docs/privacy.html) (GitHub Pages from `docs/`).
 
