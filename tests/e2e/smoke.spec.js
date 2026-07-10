@@ -183,6 +183,36 @@ test.describe('Vox Reader smoke', () => {
     }
   });
 
+  test('iframe sentence highlights during classic playback', async () => {
+    const launched = await launchWithExtension();
+    if (!launched) test.skip(true, 'Chrome extension host unavailable');
+    const { context } = launched;
+    try {
+      const page = await context.newPage();
+      await page.goto(`file://${fixturePage}`);
+      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.keyboard.press('Alt+p');
+      await expect(page.locator('#vox-player')).toBeVisible({ timeout: 10_000 });
+      await page.locator('#vox-settings-btn').click();
+      await page.locator('#eng-classic').click();
+
+      const frame = page.frameLocator('#same-origin-frame');
+      await frame.locator('p').evaluate((el) => {
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      });
+
+      await page.keyboard.press('Alt+r');
+      await expect(page.locator('#vox-status')).toContainText(/Playing|Reading selection/i, { timeout: 10_000 });
+      await expect(frame.locator('.vox-sentence-active')).toBeVisible({ timeout: 8_000 });
+    } finally {
+      await context.close();
+    }
+  });
+
   test('player shows export scope and format controls', async () => {
     const launched = await launchWithExtension();
     if (!launched) test.skip(true, 'Chrome extension host unavailable');

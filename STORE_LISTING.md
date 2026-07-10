@@ -66,15 +66,19 @@ Fallback: `https://github.com/ktorres0109/vox-reader/blob/main/PRIVACY.md`
 
 ## Suggested screenshots (1280×800 or 640×400)
 
-1. Floating player on article with word highlight
-2. Settings — Bella voice + export MP3
-3. ChatGPT thread with “Chat reading → Latest only”
-4. Popup — Open player + shortcuts
-5. Export scope — Selection / MP3 bitrate
+Captured via `npm run capture:store`:
+
+1. `01-player-article.png` — floating player on article
+2. `02-settings-export.png` — export scope / format / bitrate
+3. `03-popup.png` — extension popup
+4. `04-iframe-selection.png` — Alt+R selection inside iframe
+5. `05-chat-reply-scope.png` — chat reply scope controls
 
 ## Checklist before submit
 
-- [ ] Run `npm run pack:store` → upload `dist/vox-reader.zip` (fetch-deps + strict vendor check)
+- [ ] Run `npm run check:store` (icons, docs, version sync)
+- [ ] Run `npm run pack:store` → upload `dist/vox-reader.zip`
+- [ ] Run `npm run capture:store` → upload screenshots from `store-assets/`
 - [ ] Upload icons 128×128 (already in `icons/`)
 - [ ] Privacy policy URL live
 - [ ] Test on clean Chrome profile

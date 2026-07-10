@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
  * Capture Chrome Web Store screenshot candidates.
- * Usage: node tools/capture-store-assets.mjs
- * Requires: Google Chrome, npm install, npm run fetch-deps (optional)
+ * Usage: npm run capture:store
+ * Requires: Google Chrome, npm install
  */
 import { chromium } from '@playwright/test';
 import fs from 'node:fs';
@@ -14,6 +14,7 @@ import { unpackedExtensionId } from './extension-id.mjs';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const outDir = path.join(root, 'store-assets');
 const article = path.join(root, 'tests/fixtures/article.html');
+const chat = path.join(root, 'tests/fixtures/chat.html');
 
 if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
 
@@ -32,11 +33,22 @@ if (process.env.CHROME_PATH) launchOptions.executablePath = process.env.CHROME_P
 const context = await chromium.launchPersistentContext(userDataDir, launchOptions);
 const extensionId = unpackedExtensionId(root);
 
+async function waitForReader(page) {
+  const ready = await page.waitForFunction(
+    () => window.__voxReaderLoaded === true,
+    null,
+    { timeout: 15_000 },
+  ).then(() => true).catch(() => false);
+  if (!ready) {
+    throw new Error('Vox Reader content script did not load — ensure Chrome can load the unpacked extension');
+  }
+}
+
 try {
   const articlePage = await context.newPage();
   await articlePage.setViewportSize({ width: 1280, height: 800 });
   await articlePage.goto(`file://${article}`);
-  await articlePage.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+  await waitForReader(articlePage);
   await articlePage.keyboard.press('Alt+p');
   await articlePage.locator('#vox-player').waitFor({ state: 'visible', timeout: 10_000 });
   await articlePage.screenshot({ path: path.join(outDir, '01-player-article.png') });
@@ -47,12 +59,37 @@ try {
   await articlePage.screenshot({ path: path.join(outDir, '02-settings-export.png') });
   console.log('Saved store-assets/02-settings-export.png');
 
+  const frame = articlePage.frameLocator('#same-origin-frame');
+  await frame.locator('p').evaluate((el) => {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  });
+  await articlePage.keyboard.press('Alt+r');
+  await articlePage.locator('#vox-status').waitFor({ state: 'visible', timeout: 10_000 });
+  await articlePage.waitForTimeout(600);
+  await articlePage.screenshot({ path: path.join(outDir, '04-iframe-selection.png') });
+  console.log('Saved store-assets/04-iframe-selection.png');
+
   const popup = await context.newPage();
   await popup.setViewportSize({ width: 400, height: 520 });
   await popup.goto(`chrome-extension://${extensionId}/popup/popup.html`);
   await popup.waitForTimeout(300);
   await popup.screenshot({ path: path.join(outDir, '03-popup.png') });
   console.log('Saved store-assets/03-popup.png');
+
+  const chatPage = await context.newPage();
+  await chatPage.setViewportSize({ width: 1280, height: 800 });
+  await chatPage.goto(`file://${chat}`);
+  await waitForReader(chatPage);
+  await chatPage.keyboard.press('Alt+p');
+  await chatPage.locator('#vox-settings-btn').click();
+  await chatPage.locator('#vox-chat-read-section').waitFor({ state: 'visible', timeout: 10_000 });
+  await chatPage.waitForTimeout(300);
+  await chatPage.screenshot({ path: path.join(outDir, '05-chat-reply-scope.png') });
+  console.log('Saved store-assets/05-chat-reply-scope.png');
 } catch (err) {
   console.error('Capture failed:', err.message);
   console.error('Ensure Chrome is installed and the extension loads in a persistent context.');
