@@ -1,0 +1,15 @@
+{
+  "name": "vox-reader",
+  "version": "2.3.0",
+  "private": true,
+  "type": "module",
+  "description": "Chrome extension — read webpages aloud with word highlighting",
+  "scripts": {
+    "test": "bash tools/run-tests.sh",
+    "test:e2e": "playwright test",
+    "fetch-deps": "bash tools/fetch-deps.sh"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0"
+  }
+}

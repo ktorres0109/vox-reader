@@ -1,47 +1,91 @@
 // Vox Reader — background service worker
 
-chrome.runtime.onInstalled.addListener(() => {
+importScripts('download.js');
+
+const CONTENT_FILES = ['content/content.js', 'content/tts_sync.js'];
+const CONTENT_CSS = ['content/content.css'];
+
+chrome.runtime.onInstalled.addListener((details) => {
   chrome.storage.sync.remove(['currentWord', 'playerX', 'playerY']);
+  if (details.reason === 'install') {
+    chrome.storage.local.remove(['kokoroModelCached', 'kokoroCacheVersion']);
+    chrome.storage.sync.set({
+      voiceEngine: 'kokoro',
+      kokoroVoice: 'af_bella',
+    });
+  }
+  chrome.contextMenus.removeAll(() => {
+    chrome.contextMenus.create({
+      id: 'vox-read-selection',
+      title: 'Read selection with Vox Reader',
+      contexts: ['selection'],
+    });
+  });
+});
+
+async function injectContent(tabId) {
+  await chrome.scripting.executeScript({ target: { tabId }, files: CONTENT_FILES });
+  await chrome.scripting.insertCSS({ target: { tabId }, files: CONTENT_CSS });
+}
+
+async function sendToTab(tabId, msg) {
+  try {
+    await chrome.tabs.sendMessage(tabId, msg);
+  } catch (_) {
+    await injectContent(tabId);
+    await chrome.tabs.sendMessage(tabId, msg);
+  }
+}
+
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (info.menuItemId !== 'vox-read-selection' || !tab?.id) return;
+  const text = (info.selectionText || '').trim();
+  if (!text) return;
+  sendToTab(tab.id, { action: 'read_selection', text });
 });
 
 // ── Offscreen document management ──────────────────────────────────────────
 let offscreenCreating = false;
+let kokoroActiveTabId = null;
 
 async function ensureOffscreen() {
-  const exists = await chrome.offscreen.hasDocument().catch(() => false);
-  if (exists) return;
+  if (await chrome.offscreen.hasDocument().catch(() => false)) return;
+
   if (offscreenCreating) {
-    await new Promise(r => setTimeout(r, 600));
+    for (let i = 0; i < 25; i++) {
+      await new Promise(r => setTimeout(r, 300));
+      if (await chrome.offscreen.hasDocument().catch(() => false)) return;
+    }
     return;
   }
+
   offscreenCreating = true;
   try {
     await chrome.offscreen.createDocument({
       url: 'offscreen/offscreen.html',
       reasons: ['AUDIO_PLAYBACK'],
-      justification: 'Neural TTS synthesis (mms-tts-eng) and audio playback',
+      justification: 'Kokoro 82M neural TTS synthesis and audio playback',
     });
+    for (let i = 0; i < 25; i++) {
+      if (await chrome.offscreen.hasDocument().catch(() => false)) return;
+      await new Promise(r => setTimeout(r, 300));
+    }
   } finally {
     offscreenCreating = false;
   }
 }
 
-// Send to offscreen with retry — handles both first-create and already-exists cases.
-// When doc exists from a previous SW lifecycle, offscreen_ready was already sent and
-// won't fire again, so we must poll directly instead of waiting for the signal.
 async function sendToOffscreen(msg, maxRetries = 12) {
   await ensureOffscreen();
   const fullMsg = { ...msg, target: 'offscreen' };
   for (let i = 0; i < maxRetries; i++) {
     try {
       await chrome.runtime.sendMessage(fullMsg);
-      return; // success
+      return;
     } catch (_) {
-      // Offscreen doc still loading its module — wait and retry
       await new Promise(r => setTimeout(r, 400));
     }
   }
-  // All retries exhausted — surface the failure so content script can recover
   if (msg.tabId) {
     chrome.tabs.sendMessage(msg.tabId, {
       action: 'kokoro_error',
@@ -51,31 +95,133 @@ async function sendToOffscreen(msg, maxRetries = 12) {
   }
 }
 
-// ── Message routing ─────────────────────────────────────────────────────────
+async function kokoroVendorMissing() {
+  try {
+    const url = chrome.runtime.getURL('vendor/kokoro.web.js');
+    const res = await fetch(url, { method: 'HEAD' });
+    return !res.ok;
+  } catch {
+    return true;
+  }
+}
+
+function notifyKokoroVendorMissing(tabId) {
+  if (!tabId) return;
+  chrome.tabs.sendMessage(tabId, {
+    action: 'kokoro_error',
+    error: 'Kokoro bundle missing — run: bash tools/fetch-deps.sh',
+    tabId,
+  }).catch(() => {});
+}
+
+function interruptKokoroTab(tabId) {
+  if (!tabId) return;
+  chrome.tabs.sendMessage(tabId, {
+    action: 'kokoro_interrupted',
+    tabId,
+  }).catch(() => {});
+}
+
+async function routeKokoroAction(msg, tabId) {
+  if (msg.action === 'kokoro_load' || msg.action === 'kokoro_speak' || msg.action === 'kokoro_export') {
+    const missing = await kokoroVendorMissing();
+    if (missing) {
+      notifyKokoroVendorMissing(tabId);
+      return;
+    }
+  }
+
+  if (msg.action === 'kokoro_export') {
+    if (kokoroActiveTabId) {
+      if (kokoroActiveTabId !== tabId) interruptKokoroTab(kokoroActiveTabId);
+      kokoroActiveTabId = null;
+    }
+    await sendToOffscreen({ action: 'kokoro_stop', tabId });
+    sendToOffscreen({ ...msg, tabId });
+    return;
+  }
+
+  if (msg.action === 'kokoro_speak' && tabId) {
+    if (kokoroActiveTabId && kokoroActiveTabId !== tabId) {
+      interruptKokoroTab(kokoroActiveTabId);
+    }
+    kokoroActiveTabId = tabId;
+  }
+
+  if (msg.action === 'kokoro_stop' && tabId && kokoroActiveTabId === tabId) {
+    kokoroActiveTabId = null;
+  }
+
+  sendToOffscreen({ ...msg, tabId });
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
-  // Content → offscreen (fire-and-forget — callers use .catch(() => {}), no response needed)
-  if (msg.action === 'kokoro_load' || msg.action === 'kokoro_speak' || msg.action === 'kokoro_stop') {
+  if (msg.action === 'kokoro_load' || msg.action === 'kokoro_speak' || msg.action === 'kokoro_stop' || msg.action === 'kokoro_pause' || msg.action === 'kokoro_resume' || msg.action === 'kokoro_warm_voice' || msg.action === 'kokoro_export' || msg.action === 'kokoro_export_cancel') {
     const tabId = sender.tab?.id;
-    if (msg.action === 'kokoro_stop') {
-      // every page unload fires a stop; don't CREATE the offscreen document
-      // just to tell it to stop — only route if it already exists
+    if (msg.action === 'kokoro_stop' || msg.action === 'kokoro_pause' || msg.action === 'kokoro_resume') {
+      if (msg.action === 'kokoro_stop' && tabId && kokoroActiveTabId === tabId) kokoroActiveTabId = null;
       chrome.offscreen.hasDocument()
         .then(ex => { if (ex) sendToOffscreen({ ...msg, tabId }); })
         .catch(() => {});
+      return;
+    }
+    if (msg.action === 'kokoro_export_cancel') {
+      sendToOffscreen({ ...msg, tabId });
+      return;
+    }
+    if (msg.action === 'kokoro_load' || msg.action === 'kokoro_speak' || msg.action === 'kokoro_export') {
+      routeKokoroAction(msg, tabId);
       return;
     }
     sendToOffscreen({ ...msg, tabId });
     return;
   }
 
-  // Offscreen → content tab
   if (
     msg.action === 'kokoro_ready'  ||
+    msg.action === 'kokoro_progress' ||
     msg.action === 'kokoro_chunk'    || msg.action === 'kokoro_end'    ||
-    msg.action === 'kokoro_error'
+    msg.action === 'kokoro_error'    ||
+    msg.action === 'kokoro_export_progress' ||
+    msg.action === 'kokoro_export_error'
   ) {
+    if (msg.action === 'kokoro_end' && msg.tabId && kokoroActiveTabId === msg.tabId) {
+      kokoroActiveTabId = null;
+    }
     if (msg.tabId) chrome.tabs.sendMessage(msg.tabId, msg).catch(() => {});
+    return;
+  }
+
+  if (msg.action === 'kokoro_export_ready') {
+    const filename = msg.filename || 'vox-reader-export.wav';
+    const tabId = msg.tabId;
+    try {
+      const bytes = base64ToUint8Array(msg.wavBase64);
+      downloadWavBlob(bytes, filename)
+        .then(() => {
+          if (tabId) {
+            chrome.tabs.sendMessage(tabId, { action: 'kokoro_export_done', filename, tabId }).catch(() => {});
+          }
+        })
+        .catch((err) => {
+          if (tabId) {
+            chrome.tabs.sendMessage(tabId, {
+              action: 'kokoro_export_error',
+              error: err.message,
+              tabId,
+            }).catch(() => {});
+          }
+        });
+    } catch (err) {
+      if (tabId) {
+        chrome.tabs.sendMessage(tabId, {
+          action: 'kokoro_export_error',
+          error: err.message,
+          tabId,
+        }).catch(() => {});
+      }
+    }
     return;
   }
 });

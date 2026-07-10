@@ -1,14 +1,16 @@
 {
   "manifest_version": 3,
   "name": "Vox Reader",
-  "version": "2.0.0",
+  "version": "2.3.0",
   "minimum_chrome_version": "116",
-  "description": "Read any webpage aloud with word-by-word highlighting. Free, private, no account needed. Includes optional AI neural voice.",
+  "description": "Read any webpage aloud with word highlighting. Default AI voice: Bella (Kokoro 82M). Free, private, works on ChatGPT, Claude, and Gemini.",
   "permissions": [
     "storage",
     "activeTab",
     "scripting",
-    "offscreen"
+    "offscreen",
+    "contextMenus",
+    "downloads"
   ],
   "host_permissions": [
     "<all_urls>"

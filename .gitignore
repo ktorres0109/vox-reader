@@ -5,3 +5,6 @@ popup/.DS_Store
 vendor/
 # model files are large binaries, not committed
 vendor/models/
+node_modules/
+test-results/
+playwright-report/

@@ -82,6 +82,40 @@
       transform: translateY(0);
     }
 
+    .main-btn.secondary {
+      margin-top: 0;
+      margin-bottom: 14px;
+      background: #1a1a1a;
+      color: #f59e0b;
+      border: 1px solid #f59e0b44;
+    }
+
+    .main-btn.secondary:hover {
+      background: #252525;
+      border-color: #f59e0b88;
+    }
+
+    .main-btn.secondary.has-selection {
+      background: #1f1a10;
+      border-color: #f59e0b;
+      box-shadow: 0 0 0 1px #f59e0b33;
+    }
+
+    .main-btn.secondary.hint {
+      color: #888;
+      border-color: #333;
+      font-size: 11px;
+    }
+
+    .btn-stack {
+      margin: 14px 16px 0;
+    }
+
+    .btn-stack .main-btn {
+      width: 100%;
+      margin: 0 0 8px;
+    }
+
     .shortcuts {
       padding: 0 16px 14px;
       border-top: 1px solid #141414;
@@ -133,10 +167,13 @@
       <div class="logo-icon">⬡</div>
       <span class="logo-text">Vox Reader</span>
     </div>
-    <div class="logo-sub">Text to Speech</div>
+    <div class="logo-sub">Bella AI voice · reads any page</div>
   </div>
 
-  <button class="main-btn" id="open-player">Open Player on Page</button>
+  <div class="btn-stack">
+    <button class="main-btn" id="open-player">Open Player on Page</button>
+    <button class="main-btn secondary" id="read-selection">▶ Read Selected Text</button>
+  </div>
 
   <div class="shortcuts">
     <div class="shortcuts-title">Keyboard Shortcuts</div>
@@ -154,7 +191,7 @@
     </div>
   </div>
 
-  <div class="footer">Free · Private · No account needed</div>
+  <div class="footer">Free · Private · Bella voice included</div>
 
   <script src="popup.js"></script>
 </body>
