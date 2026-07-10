@@ -1104,9 +1104,38 @@
     return S.words.findIndex(w => norm(w.text) === first);
   }
 
-  async function readSelection(fallbackText) {
+  function getSelectionText() {
     const sel = window.getSelection();
-    const text = (sel?.toString() || fallbackText || '').trim();
+    let text = sel?.toString().trim() || '';
+    if (text) return text;
+    try {
+      const frame = document.activeElement;
+      if (frame?.tagName === 'IFRAME' && frame.contentDocument) {
+        text = frame.contentDocument.getSelection()?.toString().trim() || '';
+      }
+    } catch (_) { /* cross-origin iframe */ }
+    return text;
+  }
+
+  function getSelectionRange() {
+    const sel = window.getSelection();
+    if (sel?.rangeCount && !sel.isCollapsed) {
+      return sel.getRangeAt(0).cloneRange();
+    }
+    try {
+      const frame = document.activeElement;
+      if (frame?.tagName === 'IFRAME' && frame.contentDocument) {
+        const inner = frame.contentDocument.getSelection();
+        if (inner?.rangeCount && !inner.isCollapsed) {
+          return inner.getRangeAt(0).cloneRange();
+        }
+      }
+    } catch (_) { /* cross-origin iframe */ }
+    return null;
+  }
+
+  async function readSelection(fallbackText) {
+    const text = (getSelectionText() || fallbackText || '').trim();
     if (!text) {
       setStatus('No text selected');
       return;
@@ -1117,7 +1146,7 @@
     stop(false);
     unwrap();
 
-    const range = sel?.rangeCount && !sel.isCollapsed ? sel.getRangeAt(0).cloneRange() : null;
+    const range = getSelectionRange();
     if (range && wrapWordsInRange(range)) {
       const endIdx = S.words.length - 1;
       setStatus('Reading selection…', true);
@@ -1139,8 +1168,7 @@
   }
 
   async function handleSel(selText, anchor) {
-    const sel = window.getSelection();
-    if (sel?.toString().trim()) {
+    if (getSelectionText()) {
       await readSelection();
       return;
     }
@@ -1586,9 +1614,8 @@
 
     let _capturedSel = null;
     document.getElementById('vox-playpause-bar').addEventListener('mousedown', () => {
-      const sel = window.getSelection();
-      const text = sel ? sel.toString().trim() : '';
-      _capturedSel = text ? { text, anchor: sel.anchorNode } : null;
+      const text = getSelectionText();
+      _capturedSel = text ? { text } : null;
     });
 
     document.getElementById('vox-playpause-bar').onclick = async () => {
@@ -1956,8 +1983,7 @@
     }
     if (shortcutKeyMatches(e, S.shortcuts.read)) {
       e.preventDefault();
-      const sel = window.getSelection();
-      const text = sel?.toString().trim();
+      const text = getSelectionText();
       if (text) ensurePlayerReady(() => { readSelection(text).catch(() => {}); });
     }
   });

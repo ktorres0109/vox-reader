@@ -30,4 +30,9 @@ for (const file of required) {
   assert.ok(fs.existsSync(path.join(root, file)), `missing required file: ${file}`);
 }
 
+const optionalVendor = path.join(root, 'vendor/kokoro.web.js');
+if (!fs.existsSync(optionalVendor)) {
+  console.warn('validate-extension: vendor/kokoro.web.js missing — run npm run fetch-deps');
+}
+
 console.log(`validate-extension.mjs: ok (v${manifest.version})`);

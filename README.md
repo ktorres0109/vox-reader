@@ -118,11 +118,13 @@ Classic system voices are available under **Settings → Classic** (no download)
 ```bash
 git clone https://github.com/ktorres0109/vox-reader.git
 cd vox-reader
+npm install
 npm run fetch-deps
-npm test          # unit tests (WAV encoder, sentences, manifest)
+npm test              # unit tests
+npm run test:e2e      # Playwright smoke (requires Google Chrome)
 ```
 
-CI runs `npm test` on every push/PR (GitHub Actions).
+CI runs `npm test` on every push/PR (GitHub Actions). E2E smoke runs in a separate job with Chrome + xvfb.
 
 After changing extension code, **Reload** on `chrome://extensions` and refresh the target page.
 
