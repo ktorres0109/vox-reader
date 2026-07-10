@@ -35,6 +35,10 @@ for (const id of ['toggle-player', 'stop-reading', 'read-selection', 'export-aud
   assert.ok(manifest.commands?.[id], `manifest missing command: ${id}`);
 }
 
+for (const size of ['16', '48', '128']) {
+  assert.equal(manifest.icons?.[size], `icons/icon${size}.png`, `manifest.icons.${size} mismatch`);
+}
+
 const vendorFiles = [
   'vendor/kokoro.web.js',
   'vendor/lame.min.js',

@@ -25,4 +25,4 @@ console.log('  1. npm run capture:store     → store-assets/*.png');
 console.log('  2. Upload dist/vox-reader.zip to Chrome Web Store');
 console.log('  3. Privacy URL: https://ktorres0109.github.io/vox-reader/privacy.html');
 console.log('  4. Copy listing text from STORE_LISTING.md');
-console.log('  5. Remap shortcuts at chrome://extensions/shortcuts if needed');
+console.log('  6. Verify privacy page: https://ktorres0109.github.io/vox-reader/privacy.html');
