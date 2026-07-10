@@ -359,6 +359,54 @@ test.describe('Vox Reader smoke', () => {
     }
   });
 
+  test('chat single-reply scope wraps only the chosen reply', async () => {
+    const launched = await launchWithExtension();
+    if (!launched) test.skip(true, 'Chrome extension host unavailable');
+    const { context } = launched;
+    try {
+      const page = await context.newPage();
+      await page.goto(`file://${chatFixturePage}`);
+      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.keyboard.press('Alt+p');
+      await page.locator('#vox-settings-btn').click();
+      await page.locator('#eng-classic').click();
+      await page.selectOption('#chat-read-scope', 'single');
+      await expect(page.locator('#chat-read-index')).toBeVisible();
+      await page.selectOption('#chat-read-index', '0');
+      await page.locator('#vox-settings-close').click();
+      await page.locator('#vox-playpause-bar').click();
+      await page.waitForFunction(
+        () => document.querySelectorAll('.vox-word').length > 0,
+        null,
+        { timeout: 15_000 },
+      );
+      const firstReply = page.locator('[data-message-author-role="assistant"]').first();
+      const lastReply = page.locator('[data-message-author-role="assistant"]').last();
+      await expect(firstReply.locator('.vox-word')).not.toHaveCount(0);
+      await expect(lastReply.locator('.vox-word')).toHaveCount(0);
+    } finally {
+      await context.close();
+    }
+  });
+
+  test('Alt+S cancels queued export from Alt+E', async () => {
+    const launched = await launchWithExtension();
+    if (!launched) test.skip(true, 'Chrome extension host unavailable');
+    const { context } = launched;
+    try {
+      const page = await context.newPage();
+      await page.goto(`file://${fixturePage}`);
+      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.keyboard.press('Alt+e');
+      await expect(page.locator('#exp-mp3')).toHaveText('Cancel', { timeout: 10_000 });
+      await page.keyboard.press('Alt+s');
+      await expect(page.locator('#vox-status')).toContainText(/cancelled/i, { timeout: 8_000 });
+      await expect(page.locator('#exp-mp3')).toHaveText('Export', { timeout: 5_000 });
+    } finally {
+      await context.close();
+    }
+  });
+
   test('chat fixture shows reply scope controls', async () => {
     const launched = await launchWithExtension();
     if (!launched) test.skip(true, 'Chrome extension host unavailable');
