@@ -44,6 +44,7 @@ chrome.storage.sync.get('shortcuts', (p) => {
   document.getElementById('sc-play-display').textContent = `Alt+${(sc.play || 'p').toUpperCase()}`;
   document.getElementById('sc-stop-display').textContent = `Alt+${(sc.stop || 's').toUpperCase()}`;
   document.getElementById('sc-read-display').textContent = `Alt+${(sc.read || 'r').toUpperCase()}`;
+  document.getElementById('sc-export-display').textContent = `Alt+${(sc.export || 'e').toUpperCase()}`;
 });
 
 document.getElementById('open-player').addEventListener('click', async () => {

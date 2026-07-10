@@ -69,6 +69,7 @@ test.describe('Vox Reader smoke', () => {
       await expect(popup.locator('#open-player')).toBeVisible();
       await expect(popup.locator('#read-selection')).toBeVisible();
       await expect(popup.locator('#sc-play-display')).toHaveText('Alt+P');
+      await expect(popup.locator('#sc-export-display')).toHaveText('Alt+E');
     } finally {
       await context.close();
     }

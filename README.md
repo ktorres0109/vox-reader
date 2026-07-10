@@ -84,7 +84,7 @@ On first open, Vox Reader downloads the **Kokoro 82M model** (~86 MB) from Huggi
 | Play page | **▶** in the floating player (or **Alt+P** — opens player if needed) |
 | Pause / resume | **▶** again or **Alt+P** |
 | Stop | **Alt+S** |
-| Export audio | **Export** button — MP3 (default) or WAV in settings row (Kokoro) |
+| Export audio | **Export** or **Alt+E** — MP3/WAV (Kokoro; works on classic if AI model is loaded) |
 | Print | **Print** — reader view in immersive mode, full page otherwise |
 | Immersive mode | **☰** |
 | Settings | **⚙** |
@@ -164,6 +164,12 @@ vox-reader/
 | `kokoro.web.js` missing | `bash tools/fetch-deps.sh` |
 | Export fails | Try shorter selection; check Downloads permission |
 | KReader highlights | Enable **Settings → KReader sync** |
+
+---
+
+## Privacy
+
+Vox Reader processes text **on your device**. See [PRIVACY.md](PRIVACY.md) for the full policy (Chrome Web Store listing).
 
 ---
 
