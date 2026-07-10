@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Vox Reader",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "minimum_chrome_version": "116",
   "description": "Read any webpage aloud with word highlighting. Default AI voice: Bella (Kokoro 82M). Free, private, works on ChatGPT, Claude, and Gemini.",
   "permissions": [
@@ -41,7 +41,8 @@
       "css": [
         "content/content.css"
       ],
-      "run_at": "document_idle"
+      "run_at": "document_idle",
+      "all_frames": true
     }
   ]
 }

@@ -22,11 +22,12 @@ async function sendToTab(tabId, msg) {
 
 async function getPageSelection(tabId) {
   try {
-    const [{ result }] = await chrome.scripting.executeScript({
-      target: { tabId },
+    const results = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
       func: () => (window.getSelection()?.toString() || '').trim(),
     });
-    return result || '';
+    const texts = (results || []).map((r) => r.result).filter(Boolean);
+    return texts.join('\n').trim();
   } catch (_) {
     return '';
   }

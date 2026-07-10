@@ -30,6 +30,12 @@ jobs:
 
       - name: Install Google Chrome
         uses: browser-actions/setup-chrome@v1
+        id: setup-chrome
+        with:
+          install-dependencies: true
+
+      - name: Export Chrome path
+        run: echo "CHROME_PATH=${{ steps.setup-chrome.outputs.chrome-path }}" >> $GITHUB_ENV
 
       - name: Install dependencies
         run: npm install

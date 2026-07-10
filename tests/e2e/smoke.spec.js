@@ -3,14 +3,26 @@ import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { unpackedExtensionId } from '../../tools/extension-id.mjs';
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const extensionPath = root;
 const fixturePage = path.join(root, 'tests/fixtures/article.html');
 
+async function waitForExtensionServiceWorker(context, timeoutMs = 30_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const workers = context.serviceWorkers();
+    const extWorker = workers.find((w) => w.url().startsWith('chrome-extension://'));
+    if (extWorker) return extWorker;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  return context.waitForEvent('serviceworker', { timeout: 5_000 }).catch(() => null);
+}
+
 async function launchWithExtension() {
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vox-reader-pw-'));
-  const context = await chromium.launchPersistentContext(userDataDir, {
+  const launchOptions = {
     channel: 'chrome',
     headless: false,
     ignoreDefaultArgs: ['--disable-extensions'],
@@ -18,21 +30,30 @@ async function launchWithExtension() {
       `--disable-extensions-except=${extensionPath}`,
       `--load-extension=${extensionPath}`,
     ],
-  });
-
-  const page = await context.newPage();
-  await page.goto('about:blank');
-
-  let [serviceWorker] = context.serviceWorkers();
-  if (!serviceWorker) {
-    serviceWorker = await context.waitForEvent('serviceworker', { timeout: 15_000 }).catch(() => null);
+  };
+  if (process.env.CHROME_PATH) {
+    launchOptions.executablePath = process.env.CHROME_PATH;
   }
-  if (!serviceWorker) {
+
+  const context = await chromium.launchPersistentContext(userDataDir, launchOptions);
+
+  const serviceWorker = await waitForExtensionServiceWorker(context, 15_000);
+  const extensionId = serviceWorker?.url().split('/')[2] ?? unpackedExtensionId(extensionPath);
+
+  const probe = await context.newPage();
+  await probe.goto(`file://${fixturePage}`);
+  const contentReady = await probe.waitForFunction(
+    () => window.__voxReaderLoaded === true,
+    null,
+    { timeout: 15_000 },
+  ).then(() => true).catch(() => false);
+  await probe.close();
+
+  if (!contentReady) {
     await context.close();
     return null;
   }
 
-  const extensionId = serviceWorker.url().split('/')[2];
   return { context, extensionId };
 }
 
@@ -77,6 +98,32 @@ test.describe('Vox Reader smoke', () => {
       await page.keyboard.press('Alt+p');
       await expect(page.locator('#vox-player')).toBeVisible({ timeout: 10_000 });
       await expect(page.locator('#vox-playpause-bar')).toBeVisible();
+    } finally {
+      await context.close();
+    }
+  });
+
+  test('Alt+R reads text selected inside a same-origin iframe', async () => {
+    const launched = await launchWithExtension();
+    if (!launched) test.skip(true, 'Chrome extension host unavailable');
+    const { context } = launched;
+    try {
+      const page = await context.newPage();
+      await page.goto(`file://${fixturePage}`);
+      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+
+      const frame = page.frameLocator('#same-origin-frame');
+      await frame.locator('p').evaluate((el) => {
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      });
+
+      await page.keyboard.press('Alt+r');
+      await expect(page.locator('#vox-player')).toBeVisible({ timeout: 10_000 });
+      await expect(page.locator('#vox-status')).toContainText(/Reading selection/i, { timeout: 10_000 });
     } finally {
       await context.close();
     }
