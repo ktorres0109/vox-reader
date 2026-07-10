@@ -162,7 +162,7 @@ vox-reader/
 | Play disabled | Wait for Kokoro download (progress bar) |
 | Only last chat reply read | Update extension — reads all assistant messages |
 | `kokoro.web.js` missing | `bash tools/fetch-deps.sh` |
-| Export fails | Try shorter selection; check Downloads permission |
+| Export fails | Try shorter selection; check Downloads permission; first export downloads AI voice once |
 | KReader highlights | Enable **Settings → KReader sync** |
 
 ---
@@ -170,6 +170,10 @@ vox-reader/
 ## Privacy
 
 Vox Reader processes text **on your device**. See [PRIVACY.md](PRIVACY.md) for the full policy (Chrome Web Store listing).
+
+## Chrome Web Store
+
+Listing copy and screenshot checklist: [STORE_LISTING.md](STORE_LISTING.md). Capture screenshots with `npm run capture:store` (requires Chrome).
 
 ---
 
