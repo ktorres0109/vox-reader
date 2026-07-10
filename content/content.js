@@ -89,6 +89,8 @@
     kokoroDownloadPct: 0,
     exporting: false,
     exportFormat: 'mp3',
+    exportScope: 'all',
+    exportBitrate: 128,
     playAfterExport: false,
     kreaderSync: false,
     chatDomDirty: false,          // chat DOM changed since last wrap
@@ -124,7 +126,7 @@
     chrome.storage.sync.get([
       'speed','voiceName','shortcuts','highlightWord','highlightSentence',
       'sentenceStyle','wordColor','sentenceHex',
-      'voiceEngine','kokoroVoice','kreaderSync','exportFormat',
+      'voiceEngine','kokoroVoice','kreaderSync','exportFormat','exportScope','exportBitrate',
     ], (p) => {
       if (p.speed != null) S.speed = p.speed;
       if (p.voiceName) S.selectedVoiceName = p.voiceName;
@@ -139,6 +141,10 @@
       S.kokoroVoice = knownVoice ? p.kokoroVoice : DEFAULT_KOKORO_VOICE;
       if (p.kreaderSync != null) S.kreaderSync = !!p.kreaderSync;
       if (p.exportFormat === 'wav' || p.exportFormat === 'mp3') S.exportFormat = p.exportFormat;
+      if (p.exportScope === 'all' || p.exportScope === 'selection' || p.exportScope === 'here') {
+        S.exportScope = p.exportScope;
+      }
+      if ([96, 128, 192].includes(p.exportBitrate)) S.exportBitrate = p.exportBitrate;
       cb();
     });
   }
@@ -154,6 +160,8 @@
         kokoroVoice: S.kokoroVoice,
         kreaderSync: S.kreaderSync,
         exportFormat: S.exportFormat,
+        exportScope: S.exportScope,
+        exportBitrate: S.exportBitrate,
       });
     } catch(e) { /* extension reloaded mid-session, ignore */ }
   }
@@ -1343,10 +1351,44 @@
   // ── Audio export ───────────────────────────────────────────────────────────
   const MAX_EXPORT_WORDS = 2500;
 
+  function getExportWordRange() {
+    if (!S.words.length) return null;
+    const maxEnd = S.words.length - 1;
+
+    if (S.exportScope === 'selection') {
+      const text = getSelectionText();
+      if (!text) return null;
+      const start = findWordIdxForText(text);
+      if (start < 0) return null;
+      const wc = text.trim().split(/\s+/).filter(Boolean).length;
+      return { start, end: Math.min(start + wc - 1, maxEnd) };
+    }
+
+    if (S.exportScope === 'here') {
+      const start = Math.min(Math.max(0, S.currentWord), maxEnd);
+      const end = S.speakEndIdx != null ? Math.min(S.speakEndIdx, maxEnd) : maxEnd;
+      return end >= start ? { start, end } : null;
+    }
+
+    return {
+      start: 0,
+      end: S.speakEndIdx != null ? Math.min(S.speakEndIdx, maxEnd) : maxEnd,
+    };
+  }
+
   function exportAudio() {
     const doExport = () => {
-      const startIdx = 0;
-      let endIdx = S.speakEndIdx != null ? S.speakEndIdx : S.words.length - 1;
+      const range = getExportWordRange();
+      if (!range) {
+        if (S.exportScope === 'selection') {
+          setStatus(getSelectionText() ? 'Selection not found on page' : 'Select text on the page first');
+        } else {
+          setStatus('Nothing to export');
+        }
+        return;
+      }
+
+      let { start: startIdx, end: endIdx } = range;
       if (endIdx < startIdx) {
         setStatus('Nothing to export');
         return;
@@ -1380,6 +1422,7 @@
           voice: S.kokoroVoice,
           filename,
           format: S.exportFormat,
+          mp3Bitrate: S.exportBitrate,
         });
         return;
       }
@@ -1402,21 +1445,33 @@
   function syncExportUI() {
     const btn = document.getElementById('exp-mp3');
     const fmt = document.getElementById('export-format');
+    const scope = document.getElementById('export-scope');
+    const bitrate = document.getElementById('export-bitrate');
     if (fmt) fmt.value = S.exportFormat;
+    if (scope) scope.value = S.exportScope;
+    if (bitrate) {
+      bitrate.value = String(S.exportBitrate);
+      bitrate.classList.toggle('vs-hidden', S.exportFormat !== 'mp3');
+    }
     if (!btn) return;
     if (S.voiceEngine === 'kokoro') {
       const ext = S.exportFormat === 'mp3' ? 'MP3' : 'WAV';
+      const scopeLabel = S.exportScope === 'selection' ? 'selection' : S.exportScope === 'here' ? 'from here' : 'full page';
       btn.textContent = 'Export';
       btn.title = S.kokoroModelCached
-        ? `Download ${ext} file (Kokoro voice)`
+        ? `Download ${ext} (${scopeLabel})`
         : 'AI voice must finish downloading first';
       btn.disabled = !S.kokoroModelCached || S.exporting;
       if (fmt) fmt.disabled = !S.kokoroModelCached || S.exporting;
+      if (scope) scope.disabled = !S.kokoroModelCached || S.exporting;
+      if (bitrate) bitrate.disabled = !S.kokoroModelCached || S.exporting || S.exportFormat !== 'mp3';
     } else {
       btn.textContent = 'Preview';
       btn.title = 'Preview with classic voice (not a file download)';
       btn.disabled = false;
       if (fmt) fmt.disabled = true;
+      if (scope) scope.disabled = false;
+      if (bitrate) bitrate.classList.add('vs-hidden');
     }
   }
 
@@ -1624,9 +1679,19 @@
           <!-- Export + status on same row -->
           <div class="vs vs-bottom-row">
             <button class="vs-export-btn" id="exp-pdf" title="Print this page">Print</button>
+            <select id="export-scope" class="vs-export-format" aria-label="Export scope" title="What to export">
+              <option value="all" ${S.exportScope==='all'?'selected':''}>All</option>
+              <option value="selection" ${S.exportScope==='selection'?'selected':''}>Selection</option>
+              <option value="here" ${S.exportScope==='here'?'selected':''}>From here</option>
+            </select>
             <select id="export-format" class="vs-export-format" aria-label="Export format" title="Export format">
               <option value="mp3" ${S.exportFormat==='mp3'?'selected':''}>MP3</option>
               <option value="wav" ${S.exportFormat==='wav'?'selected':''}>WAV</option>
+            </select>
+            <select id="export-bitrate" class="vs-export-format ${S.exportFormat==='wav'?'vs-hidden':''}" aria-label="MP3 bitrate" title="MP3 bitrate">
+              <option value="96" ${S.exportBitrate===96?'selected':''}>96k</option>
+              <option value="128" ${S.exportBitrate===128?'selected':''}>128k</option>
+              <option value="192" ${S.exportBitrate===192?'selected':''}>192k</option>
             </select>
             <button class="vs-export-btn" id="exp-mp3" title="Download audio (Kokoro) or preview (classic)">Export</button>
             <span id="vox-status" role="status" aria-live="polite">Ready</span>
@@ -1852,6 +1917,17 @@
       S.exportFormat = e.target.value === 'wav' ? 'wav' : 'mp3';
       savePrefs();
       syncExportUI();
+    };
+    document.getElementById('export-scope').onchange = (e) => {
+      const v = e.target.value;
+      S.exportScope = (v === 'selection' || v === 'here') ? v : 'all';
+      savePrefs();
+      syncExportUI();
+    };
+    document.getElementById('export-bitrate').onchange = (e) => {
+      const n = parseInt(e.target.value, 10);
+      S.exportBitrate = [96, 128, 192].includes(n) ? n : 128;
+      savePrefs();
     };
 
     // Click-to-jump (only while speaking/paused)

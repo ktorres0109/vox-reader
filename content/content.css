@@ -287,7 +287,7 @@
 
 /* Bottom row: export + status inline */
 .vs-bottom-row {
-  display: flex; align-items: center; gap: 6px;
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
 }
 .vs-export-btn {
   background: #181818; border: 1px solid #252525;
@@ -299,7 +299,7 @@
 .vs-export-format {
   background: #181818; border: 1px solid #252525; color: #888;
   border-radius: 7px; padding: 5px 6px; font-size: 10px;
-  font-family: inherit; cursor: pointer; max-width: 52px;
+  font-family: inherit; cursor: pointer; max-width: 72px;
 }
 .vs-export-format:disabled { opacity: 0.45; cursor: not-allowed; }
 #vox-status {
