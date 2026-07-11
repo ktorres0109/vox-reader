@@ -60,15 +60,11 @@ Provide text-to-speech with visual highlighting for web page content the user ch
 
 `https://ktorres0109.github.io/vox-reader/privacy.html`
 
-(GitHub Pages deploys from `docs/` via `.github/workflows/pages.yml`.)
+**GitHub Pages setup (required):** Settings → Pages → **Deploy from a branch** → Branch **`main`** → Folder **`/docs`** (not repo root).
 
-**One-time setup (required):**
-1. Repo **Settings → Pages → Build and deployment → Source:** **Deploy from a branch**
-2. Branch: **`gh-pages`** · Folder: **`/ (root)`**
-3. Repo **Settings → Actions → General → Workflow permissions:** **Read and write**
-4. Re-run **Deploy privacy page** (Actions → workflow → Run workflow) if needed
+Do **not** use repo root `/` — that publishes README instead of `docs/privacy.html`.
 
-After a green deploy, verify: `https://ktorres0109.github.io/vox-reader/privacy.html`
+After saving, verify the privacy URL loads (may take 1–2 minutes).
 
 Fallback: `https://github.com/ktorres0109/vox-reader/blob/main/PRIVACY.md`
 

@@ -1,7 +1,7 @@
-name: Deploy privacy page
+name: Verify privacy docs
 
-# Publishes docs/ to the gh-pages branch.
-# One-time setup: Settings → Pages → Build from branch → gh-pages / (root)
+# GitHub Pages is served from main → /docs (Settings → Pages).
+# No deploy step required — push updates to docs/ on main go live automatically.
 
 on:
   push:
@@ -12,26 +12,15 @@ on:
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
-permissions:
-  contents: write
-
-concurrency:
-  group: pages
-  cancel-in-progress: true
-
 jobs:
-  deploy:
+  verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Publish docs to gh-pages branch
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./docs
-          publish_branch: gh-pages
-          force_orphan: true
-          user_name: github-actions[bot]
-          user_email: github-actions[bot]@users.noreply.github.com
-          commit_message: 'Deploy privacy page from main'
+      - name: Check privacy files exist
+        run: |
+          test -f docs/privacy.html
+          test -f docs/index.html
+          grep -q 'privacy.html' docs/index.html
+          echo "Privacy docs OK — served from Settings → Pages → main → /docs"

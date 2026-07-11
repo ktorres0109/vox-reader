@@ -178,7 +178,7 @@ Vox Reader processes text **on your device**. See [PRIVACY.md](PRIVACY.md) for t
 
 Listing copy and screenshot checklist: [STORE_LISTING.md](STORE_LISTING.md). Run `npm run check:store` before submit. One-command release build: `npm run release:store` → `dist/vox-reader.zip`. Capture screenshots with `npm run capture:store`.
 
-Privacy page for store URL: [docs/privacy.html](docs/privacy.html) (GitHub Pages from `docs/`).
+Privacy page for store URL: [docs/privacy.html](docs/privacy.html) — enable GitHub Pages: Settings → Pages → branch **`main`**, folder **`/docs`** (not root). Live URL: https://ktorres0109.github.io/vox-reader/privacy.html
 
 ---
 
