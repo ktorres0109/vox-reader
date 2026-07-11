@@ -78,6 +78,7 @@ Captured via `npm run capture:store`:
 ## Checklist before submit
 
 - [ ] Run `npm run check:store` (icons, docs, version sync)
+- [ ] Run `npm test` (includes e2e smoke count guard)
 - [ ] Run `npm run release:store` → upload `dist/vox-reader.zip` (check + fetch-deps + strict pack)
 - [ ] Run `npm run capture:store` → upload screenshots from `store-assets/`
 - [ ] Upload icons 128×128 (already in `icons/`)

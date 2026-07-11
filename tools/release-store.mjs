@@ -15,10 +15,13 @@ const zipPath = path.join(root, 'dist', 'vox-reader.zip');
 execSync('npm run pack:store', { cwd: root, stdio: 'inherit' });
 
 const sizeMb = (fs.statSync(zipPath).size / 1024 / 1024).toFixed(2);
+const smoke = fs.readFileSync(path.join(root, 'tests/e2e/smoke.spec.js'), 'utf8');
+const e2eCount = (smoke.match(/^\s+test\(/gm) || []).length;
 
 console.log('');
 console.log(`Vox Reader v${manifest.version} — store build ready`);
 console.log(`  Zip: dist/vox-reader.zip (${sizeMb} MB)`);
+console.log(`  E2e smoke tests: ${e2eCount}`);
 console.log('');
 console.log('Next steps:');
 console.log('  1. npm run capture:store     → store-assets/*.png');
