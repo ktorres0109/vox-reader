@@ -755,6 +755,79 @@ test.describe('Vox Reader smoke', () => {
     }
   });
 
+  test('popup open player shows floating bar on page', async () => {
+    const launched = await launchWithExtension();
+    if (!launched) test.skip(true, 'Chrome extension host unavailable');
+    const { context, extensionId } = launched;
+    try {
+      const page = await context.newPage();
+      await page.goto(`file://${fixturePage}`);
+      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+
+      const popup = await context.newPage();
+      await popup.goto(`chrome-extension://${extensionId}/popup/popup.html`);
+      await popup.locator('#open-player').click();
+      await expect(page.locator('#vox-player')).toBeVisible({ timeout: 10_000 });
+    } finally {
+      await context.close();
+    }
+  });
+
+  test('close player hides the floating bar', async () => {
+    const launched = await launchWithExtension();
+    if (!launched) test.skip(true, 'Chrome extension host unavailable');
+    const { context } = launched;
+    try {
+      const page = await context.newPage();
+      await page.goto(`file://${fixturePage}`);
+      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.keyboard.press('Alt+p');
+      await expect(page.locator('#vox-player')).toBeVisible({ timeout: 10_000 });
+      await page.locator('#vox-close-bar').click();
+      await expect(page.locator('#vox-player')).toBeHidden();
+    } finally {
+      await context.close();
+    }
+  });
+
+  test('sentence underline style toggle updates aria-pressed', async () => {
+    const launched = await launchWithExtension();
+    if (!launched) test.skip(true, 'Chrome extension host unavailable');
+    const { context } = launched;
+    try {
+      const page = await context.newPage();
+      await page.goto(`file://${fixturePage}`);
+      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.keyboard.press('Alt+p');
+      await page.locator('#vox-settings-btn').click();
+      await page.locator('#hl-ul').click();
+      await expect(page.locator('#hl-ul')).toHaveAttribute('aria-pressed', 'true');
+      await expect(page.locator('#hl-bg')).toHaveAttribute('aria-pressed', 'false');
+      await page.locator('#hl-bg').click();
+      await expect(page.locator('#hl-bg')).toHaveAttribute('aria-pressed', 'true');
+    } finally {
+      await context.close();
+    }
+  });
+
+  test('MP3 bitrate selector accepts 192 kbps', async () => {
+    const launched = await launchWithExtension();
+    if (!launched) test.skip(true, 'Chrome extension host unavailable');
+    const { context } = launched;
+    try {
+      const page = await context.newPage();
+      await page.goto(`file://${fixturePage}`);
+      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.keyboard.press('Alt+p');
+      await page.locator('#vox-settings-btn').click();
+      await page.selectOption('#export-format', 'mp3');
+      await page.selectOption('#export-bitrate', '192');
+      await expect(page.locator('#export-bitrate')).toHaveValue('192');
+    } finally {
+      await context.close();
+    }
+  });
+
   test('chat fixture shows reply scope controls', async () => {
     const launched = await launchWithExtension();
     if (!launched) test.skip(true, 'Chrome extension host unavailable');
