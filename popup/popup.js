@@ -1,4 +1,4 @@
-const CONTENT_FILES = ['content/content.js', 'content/tts_sync.js'];
+const CONTENT_FILES = ['shared/core.js', 'content/content.js', 'content/tts_sync.js'];
 const CONTENT_CSS = ['content/content.css'];
 
 const PRIVACY_URL = 'https://ktorres0109.github.io/vox-reader/privacy.html';
@@ -28,8 +28,8 @@ async function getPageSelection(tabId) {
       target: { tabId, allFrames: true },
       func: () => (window.getSelection()?.toString() || '').trim(),
     });
-    const texts = (results || []).map((r) => r.result).filter(Boolean);
-    return texts.join('\n').trim();
+    const selected = (results || []).filter((result) => result.result);
+    return (selected.find((result) => result.frameId === 0) || selected[0])?.result || '';
   } catch (_) {
     return '';
   }
@@ -41,12 +41,12 @@ function setButtonError(btn, message) {
   btn.disabled = true;
 }
 
-chrome.storage.sync.get('shortcuts', (p) => {
-  const sc = p.shortcuts || {};
-  document.getElementById('sc-play-display').textContent = `Alt+${(sc.play || 'p').toUpperCase()}`;
-  document.getElementById('sc-stop-display').textContent = `Alt+${(sc.stop || 's').toUpperCase()}`;
-  document.getElementById('sc-read-display').textContent = `Alt+${(sc.read || 'r').toUpperCase()}`;
-  document.getElementById('sc-export-display').textContent = `Alt+${(sc.export || 'e').toUpperCase()}`;
+chrome.commands.getAll((commands) => {
+  const shortcuts = new Map(commands.map((command) => [command.name, command.shortcut || 'Not set']));
+  document.getElementById('sc-play-display').textContent = shortcuts.get('toggle-player') || 'Not set';
+  document.getElementById('sc-stop-display').textContent = shortcuts.get('stop-reading') || 'Not set';
+  document.getElementById('sc-read-display').textContent = shortcuts.get('read-selection') || 'Not set';
+  document.getElementById('sc-export-display').textContent = shortcuts.get('export-audio') || 'Not set';
 });
 
 const manifest = chrome.runtime.getManifest();
