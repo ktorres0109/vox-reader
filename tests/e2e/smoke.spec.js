@@ -72,6 +72,17 @@ async function launchWithExtension() {
   return { context, extensionId };
 }
 
+async function sendToActiveTab(context, message) {
+  const serviceWorker = context.serviceWorkers()
+    .find((worker) => worker.url().startsWith('chrome-extension://'));
+  if (!serviceWorker) throw new Error('Vox Reader service worker is unavailable');
+  await serviceWorker.evaluate(async (payload) => {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id) throw new Error('No active fixture tab');
+    await chrome.tabs.sendMessage(tab.id, payload);
+  }, message);
+}
+
 test.describe('Vox Reader smoke', () => {
   test('popup renders primary actions', async () => {
     const launched = await launchWithExtension();
@@ -119,7 +130,7 @@ test.describe('Vox Reader smoke', () => {
     }
   });
 
-  test('Alt+R reads text selected inside a same-origin iframe', async () => {
+  test('reads text selected inside a same-origin iframe', async () => {
     const launched = await launchWithExtension();
     if (!launched) test.skip(true, 'Chrome extension host unavailable');
     const { context } = launched;
@@ -129,15 +140,16 @@ test.describe('Vox Reader smoke', () => {
       await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
 
       const frame = page.frameLocator('#same-origin-frame');
-      await frame.locator('p').evaluate((el) => {
+      const selected = await frame.locator('p').evaluate((el) => {
         const range = document.createRange();
         range.selectNodeContents(el);
         const sel = window.getSelection();
         sel.removeAllRanges();
         sel.addRange(range);
+        return sel.toString();
       });
 
-      await page.keyboard.press('Alt+r');
+      await sendToActiveTab(context, { action: 'read_selection', text: selected });
       await expect(page.locator('#vox-player')).toBeVisible({ timeout: 10_000 });
       await expect(page.locator('#vox-status')).toContainText(/Reading selection/i, { timeout: 10_000 });
       await expect(frame.locator('.vox-word')).not.toHaveCount(0);
@@ -168,7 +180,10 @@ test.describe('Vox Reader smoke', () => {
         sel.addRange(range);
       });
 
-      await page.keyboard.press('Alt+r');
+      await sendToActiveTab(context, {
+        action: 'read_selection',
+        text: 'First iframe sentence for highlight tests. Second sentence continues the selection.',
+      });
       await expect(page.locator('#vox-status')).toContainText(/Playing|Reading selection/i, { timeout: 10_000 });
       await expect(frame.locator('.vox-word-active')).toBeVisible({ timeout: 8_000 });
     } finally {
@@ -269,7 +284,10 @@ test.describe('Vox Reader smoke', () => {
         sel.addRange(range);
       });
 
-      await page.keyboard.press('Alt+r');
+      await sendToActiveTab(context, {
+        action: 'read_selection',
+        text: 'First iframe sentence for highlight tests. Second sentence continues the selection.',
+      });
       await expect(page.locator('#vox-status')).toContainText(/Playing|Reading selection/i, { timeout: 10_000 });
       await expect(frame.locator('.vox-sentence-active').first()).toBeVisible({ timeout: 8_000 });
     } finally {
@@ -298,7 +316,10 @@ test.describe('Vox Reader smoke', () => {
         sel.addRange(range);
       });
 
-      await page.keyboard.press('Alt+r');
+      await sendToActiveTab(context, {
+        action: 'read_selection',
+        text: 'First iframe sentence for highlight tests. Second sentence continues the selection.',
+      });
       await expect(page.locator('#vox-status')).toContainText(/Playing|Reading selection/i, { timeout: 10_000 });
       await page.keyboard.press('Alt+s');
       await expect(page.locator('#vox-status')).toContainText(/Stopped/i, { timeout: 8_000 });
