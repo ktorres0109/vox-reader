@@ -81,7 +81,7 @@ npm run fetch-deps
    - ✅ Correct: `vox-reader/` (or `vox-reader-main/`)  
    - ❌ Wrong: a subfolder like `vox-reader/content/`  
 
-5. You should see **Vox Reader** appear in the list with version **2.6.2**
+5. You should see **Vox Reader** appear in the list with version **2.6.3**
 
 6. Click the **puzzle piece** icon in Chrome’s toolbar → **pin** Vox Reader so the icon stays visible
 

@@ -325,6 +325,7 @@
     chatReadIndex: 0,
     iframeReadActive: false,
     speakEndIdx: null,            // when set, stop reading at this word index
+    lastKokoroChunk: null,        // { sent, highlightStart, duration, startedAt } for ticker resume
     _voxDomUpdate: false,         // true while wrap/unwrap mutates the page
   };
 
@@ -855,15 +856,24 @@
     stopTicker();
     clearHL();
     rewrap(() => {
-      let newIdx = anchor ? findWordIdxForText(anchor, Math.max(0, savedIdx - 20)) : savedIdx;
-      if (newIdx < 0) newIdx = Math.min(savedIdx, Math.max(0, S.words.length - 1));
+      let newIdx = savedIdx;
+      if (anchor && S.words.length) {
+        const found = findWordIdxForText(anchor, savedIdx);
+        // Never rewind highlight during playback or pause — duplicate phrases
+        // earlier on the page used to match here and jump backward.
+        if (found >= 0) newIdx = Math.max(found, savedIdx);
+        else newIdx = Math.min(savedIdx, S.words.length - 1);
+      } else {
+        newIdx = Math.min(savedIdx, Math.max(0, S.words.length - 1));
+      }
       S.currentWord = newIdx;
       if (savedEndIdx != null) {
         S.speakEndIdx = Math.min(savedEndIdx, S.words.length - 1);
         if (S.speakEndIdx < newIdx) S.speakEndIdx = newIdx;
       }
       if (S.words[newIdx]) highlightAt(newIdx);
-      restartClassicTicker();
+      if (S.voiceEngine === 'kokoro') restartKokoroTicker();
+      else restartClassicTicker();
       scheduleOverlayRefresh();
     });
   }
@@ -1342,6 +1352,54 @@
     return result;
   }
 
+  function buildKokoroWordTimings(sent, highlightStart, durationSec) {
+    if (!sent || !durationSec) {
+      return buildTimings(highlightStart, sent ? sent.end + 1 : undefined);
+    }
+    const fromLocal = Math.max(0, highlightStart - sent.start);
+    const words = S.words.slice(sent.start + fromLocal, sent.end + 1);
+    if (!words.length) return [];
+    const totalChars = words.reduce((s, w) => s + w.text.length + 1, 0) || 1;
+    let charOffset = 0;
+    return words.map((w, i) => {
+      const ms = (charOffset / totalChars) * durationSec * 1000;
+      charOffset += w.text.length + 1;
+      return { wordIdx: highlightStart + i, ms };
+    });
+  }
+
+  function applyKokoroChunk(msg) {
+    const si = getSentenceIdx(msg.startWordIdx);
+    const sent = si >= 0 ? S.sentences[si] : null;
+    const highlightStart = Math.max(S.currentWord, msg.startWordIdx);
+    const timings = buildKokoroWordTimings(sent, highlightStart, msg.duration);
+    S.currentWord = highlightStart;
+    highlightAt(highlightStart);
+    startTicker(timings, msg.startedAt);
+    S.lastKokoroChunk = {
+      sent,
+      highlightStart,
+      duration: msg.duration,
+      startedAt: msg.startedAt,
+    };
+  }
+
+  function restartKokoroTicker() {
+    if (!S.speaking || S.paused || S.voiceEngine !== 'kokoro' || !S.lastKokoroChunk) return;
+    const { sent, highlightStart, duration, startedAt } = S.lastKokoroChunk;
+    const timings = buildKokoroWordTimings(sent, highlightStart, duration);
+    if (!timings.length) return;
+    startTicker(timings, startedAt);
+    const elapsed = Date.now() - startedAt;
+    let ti = 0;
+    while (ti + 1 < timings.length && timings[ti + 1].ms <= elapsed) ti++;
+    const wordIdx = timings[ti].wordIdx;
+    if (wordIdx >= S.currentWord) {
+      S.currentWord = wordIdx;
+      highlightAt(wordIdx);
+    }
+  }
+
   function kokoroSpeakFrom(idx) {
     if (!S.kokoroModelCached) {
       S.pendingPlayAfterKokoro = true;
@@ -1352,6 +1410,7 @@
     }
     sendMsg({ action: 'kokoro_stop' });
     stopTicker(); clearHL();
+    S.lastKokoroChunk = null;
     S.currentSentence = -1;
     if (!S.words.length) return;
 
@@ -1420,6 +1479,7 @@
     }
     stopTicker(); clearHL();
     clearIframeHighlights();
+    S.lastKokoroChunk = null;
     S.speaking = false; S.paused = false; S.speakEndIdx = null;
     if (reset) S.currentWord = 0;
     document.documentElement.classList.remove('vox-reading');
@@ -2488,26 +2548,7 @@
 
     // Kokoro responses from offscreen (routed through SW)
     if (msg.action === 'kokoro_chunk') {
-      // A sentence just started playing — reset ticker to this sentence's word range.
-      // Use actual audio duration (wall-clock, includes playbackRate speed).
-      const si = getSentenceIdx(msg.startWordIdx);
-      const sent = si >= 0 ? S.sentences[si] : null;
-      let timings;
-      if (sent && msg.duration) {
-        const words = S.words.slice(sent.start, sent.end + 1);
-        const totalChars = words.reduce((s, w) => s + w.text.length + 1, 0) || 1;
-        let charOffset = 0;
-        timings = words.map((w, i) => {
-          const ms = (charOffset / totalChars) * msg.duration * 1000;
-          charOffset += w.text.length + 1;
-          return { wordIdx: sent.start + i, ms };
-        });
-      } else {
-        const endIdx = sent ? sent.end + 1 : undefined;
-        timings = buildTimings(msg.startWordIdx, endIdx);
-      }
-      S.currentWord = msg.startWordIdx;
-      startTicker(timings, msg.startedAt);
+      applyKokoroChunk(msg);
       setStatus('Playing', true);
       updatePlayBtn();
       return;
@@ -2516,6 +2557,7 @@
     if (msg.action === 'kokoro_end') {
       stopTicker(); clearHL();
       clearIframeHighlights();
+      S.lastKokoroChunk = null;
       S.speaking = false; S.paused = false; S.speakEndIdx = null;
       document.documentElement.classList.remove('vox-reading');
       updatePlayBtn(); setStatus('Done'); S.currentWord = 0;

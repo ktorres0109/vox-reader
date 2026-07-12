@@ -661,6 +661,39 @@ test.describe('Vox Reader smoke', () => {
     }
   });
 
+  test('pause does not rewind highlight on duplicate text', async () => {
+    const launched = await launchWithExtension();
+    if (!launched) test.skip(true, 'Chrome extension host unavailable');
+    const { context } = launched;
+    try {
+      const page = await context.newPage();
+      await page.goto(`file://${fixturePage}`);
+      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.keyboard.press('Alt+p');
+      await page.locator('#vox-settings-btn').click();
+      await page.locator('#eng-classic').click();
+      await page.locator('#vox-settings-close').click();
+      await page.locator('#vox-playpause-bar').click();
+      await expect(page.locator('#vox-status')).toContainText(/Playing/i, { timeout: 10_000 });
+      await page.waitForFunction(
+        () => {
+          const active = document.querySelector('article .vox-word-active');
+          return active && Number(active.getAttribute('data-vox-index') || 0) >= 4;
+        },
+        null,
+        { timeout: 15_000 },
+      );
+      const idxBeforePause = await page.locator('article .vox-word-active').first().getAttribute('data-vox-index');
+      await page.keyboard.press('Alt+p');
+      await expect(page.locator('#vox-status')).toContainText(/Paused/i, { timeout: 8_000 });
+      await page.waitForTimeout(1200);
+      const idxWhilePaused = await page.locator('article .vox-word-active').first().getAttribute('data-vox-index');
+      expect(Number(idxWhilePaused)).toBeGreaterThanOrEqual(Number(idxBeforePause));
+    } finally {
+      await context.close();
+    }
+  });
+
   test('skip back moves highlight while paused', async () => {
     const launched = await launchWithExtension();
     if (!launched) test.skip(true, 'Chrome extension host unavailable');
