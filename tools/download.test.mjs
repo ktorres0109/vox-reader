@@ -22,11 +22,13 @@ const sandbox = {
       download(options, callback) {
         calls.push(options);
         if (calls.length === 1) {
-          sandbox.chrome.runtime.lastError = { message: 'automatic download blocked' };
-          callback(undefined);
-          sandbox.chrome.runtime.lastError = null;
+          queueMicrotask(() => {
+            sandbox.chrome.runtime.lastError = { message: 'automatic download blocked' };
+            callback(undefined);
+            sandbox.chrome.runtime.lastError = null;
+          });
         } else {
-          callback(42);
+          queueMicrotask(() => callback(42));
         }
       },
       onChanged: {
@@ -39,6 +41,7 @@ const sandbox = {
   },
   setTimeout,
   clearTimeout,
+  queueMicrotask,
   Uint8Array,
 };
 vm.runInNewContext(`${src}\nglobalThis.downloadAudioBlob = downloadAudioBlob;`, sandbox);
