@@ -138,6 +138,9 @@ test.describe('Vox Reader smoke', () => {
       const page = await context.newPage();
       await page.goto(`file://${fixturePage}`);
       await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.keyboard.press('Alt+p');
+      await page.locator('#vox-settings-btn').click();
+      await page.locator('#eng-classic').click();
 
       const frame = page.frameLocator('#same-origin-frame');
       const selected = await frame.locator('p').evaluate((el) => {
