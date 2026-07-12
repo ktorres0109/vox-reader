@@ -82,32 +82,55 @@ chrome.commands.onCommand.addListener(async (command) => {
 
 // ── Offscreen document management ──────────────────────────────────────────
 let offscreenCreating = false;
+// Cached in-memory; persisted to storage.session so it survives SW restarts
 let kokoroActiveTabId = null;
 
-async function ensureOffscreen() {
-  if (await chrome.offscreen.hasDocument().catch(() => false)) return;
-
-  if (offscreenCreating) {
-    for (let i = 0; i < 25; i++) {
-      await new Promise(r => setTimeout(r, 300));
-      if (await chrome.offscreen.hasDocument().catch(() => false)) return;
-    }
-    return;
-  }
-
-  offscreenCreating = true;
+async function getKokoroActiveTab() {
+  if (kokoroActiveTabId) return kokoroActiveTabId;
   try {
-    await chrome.offscreen.createDocument({
-      url: 'offscreen/offscreen.html',
-      reasons: ['AUDIO_PLAYBACK'],
-      justification: 'Kokoro 82M neural TTS synthesis and audio playback',
-    });
-    for (let i = 0; i < 25; i++) {
-      if (await chrome.offscreen.hasDocument().catch(() => false)) return;
-      await new Promise(r => setTimeout(r, 300));
+    const r = await chrome.storage.session.get('kokoroActiveTabId');
+    kokoroActiveTabId = r.kokoroActiveTabId || null;
+  } catch (_) {}
+  return kokoroActiveTabId;
+}
+
+function setKokoroActiveTab(tabId) {
+  kokoroActiveTabId = tabId;
+  chrome.storage.session.set({ kokoroActiveTabId: tabId }).catch(() => {});
+}
+
+function clearKokoroActiveTab() {
+  kokoroActiveTabId = null;
+  chrome.storage.session.remove('kokoroActiveTabId').catch(() => {});
+}
+
+async function ensureOffscreen() {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (await chrome.offscreen.hasDocument().catch(() => false)) return;
+
+    if (offscreenCreating) {
+      for (let i = 0; i < 25; i++) {
+        await new Promise(r => setTimeout(r, 300));
+        if (await chrome.offscreen.hasDocument().catch(() => false)) return;
+      }
+      // Creator may have failed — loop around and try creating ourselves
+      continue;
     }
-  } finally {
-    offscreenCreating = false;
+
+    offscreenCreating = true;
+    try {
+      await chrome.offscreen.createDocument({
+        url: 'offscreen/offscreen.html',
+        reasons: ['AUDIO_PLAYBACK'],
+        justification: 'Kokoro 82M neural TTS synthesis and audio playback',
+      }).catch(() => { /* lost a create race — poll below */ });
+      for (let i = 0; i < 25; i++) {
+        if (await chrome.offscreen.hasDocument().catch(() => false)) return;
+        await new Promise(r => setTimeout(r, 300));
+      }
+    } finally {
+      offscreenCreating = false;
+    }
   }
 }
 
@@ -168,9 +191,10 @@ async function routeKokoroAction(msg, tabId) {
   }
 
   if (msg.action === 'kokoro_export') {
-    if (kokoroActiveTabId) {
-      if (kokoroActiveTabId !== tabId) interruptKokoroTab(kokoroActiveTabId);
-      kokoroActiveTabId = null;
+    const activeTab = await getKokoroActiveTab();
+    if (activeTab) {
+      if (activeTab !== tabId) interruptKokoroTab(activeTab);
+      clearKokoroActiveTab();
     }
     await sendToOffscreen({ action: 'kokoro_stop', tabId });
     sendToOffscreen({ ...msg, tabId });
@@ -178,14 +202,16 @@ async function routeKokoroAction(msg, tabId) {
   }
 
   if (msg.action === 'kokoro_speak' && tabId) {
-    if (kokoroActiveTabId && kokoroActiveTabId !== tabId) {
-      interruptKokoroTab(kokoroActiveTabId);
+    const activeTab = await getKokoroActiveTab();
+    if (activeTab && activeTab !== tabId) {
+      interruptKokoroTab(activeTab);
     }
-    kokoroActiveTabId = tabId;
+    setKokoroActiveTab(tabId);
   }
 
-  if (msg.action === 'kokoro_stop' && tabId && kokoroActiveTabId === tabId) {
-    kokoroActiveTabId = null;
+  if (msg.action === 'kokoro_stop' && tabId) {
+    const activeTab = await getKokoroActiveTab();
+    if (activeTab === tabId) clearKokoroActiveTab();
   }
 
   sendToOffscreen({ ...msg, tabId });
@@ -196,7 +222,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === 'kokoro_load' || msg.action === 'kokoro_speak' || msg.action === 'kokoro_stop' || msg.action === 'kokoro_pause' || msg.action === 'kokoro_resume' || msg.action === 'kokoro_warm_voice' || msg.action === 'kokoro_export' || msg.action === 'kokoro_export_cancel' || msg.action === 'kokoro_load_cancel') {
     const tabId = sender.tab?.id;
     if (msg.action === 'kokoro_stop' || msg.action === 'kokoro_pause' || msg.action === 'kokoro_resume' || msg.action === 'kokoro_load_cancel') {
-      if (msg.action === 'kokoro_stop' && tabId && kokoroActiveTabId === tabId) kokoroActiveTabId = null;
+      if (msg.action === 'kokoro_stop' && tabId) {
+        getKokoroActiveTab().then((activeTab) => {
+          if (activeTab === tabId) clearKokoroActiveTab();
+        });
+      }
       chrome.offscreen.hasDocument()
         .then(ex => { if (ex) sendToOffscreen({ ...msg, tabId }); })
         .catch(() => {});
@@ -223,8 +253,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     msg.action === 'kokoro_export_progress' ||
     msg.action === 'kokoro_export_error'
   ) {
-    if (msg.action === 'kokoro_end' && msg.tabId && kokoroActiveTabId === msg.tabId) {
-      kokoroActiveTabId = null;
+    if (msg.action === 'kokoro_end' && msg.tabId) {
+      getKokoroActiveTab().then((activeTab) => {
+        if (activeTab === msg.tabId) clearKokoroActiveTab();
+      });
     }
     if (msg.tabId) chrome.tabs.sendMessage(msg.tabId, msg).catch(() => {});
     return;

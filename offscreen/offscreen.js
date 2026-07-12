@@ -20,7 +20,9 @@ let currentVoice = 'af_bella';
 
 /** @type {{ sentences: object[], tabId: number, gen: number, speed: number, voice: string, sentenceIndex: number, offsetSec: number, paused: boolean, chunkStartedAt?: number, chunkDuration?: number } | null} */
 let loopState = null;
+let loopEpoch = 0; // increments on every runSentenceLoop start so superseded loops exit
 const synthCache = new Map();
+const loadWaiters = new Set(); // tabIds waiting for a kokoro_load to finish
 
 function send(msg) {
   chrome.runtime.sendMessage(msg).catch(() => {});
@@ -60,25 +62,32 @@ async function loadModel(tabId, voice) {
   if (modelLoadingPromise) return modelLoadingPromise;
 
   const thisGen = ++loadGeneration;
-  modelLoadingPromise = KokoroTTS.from_pretrained(MODEL_ID, {
+  const p = KokoroTTS.from_pretrained(MODEL_ID, {
     dtype: 'q8',
     device: 'wasm',
     progress_callback: (data) => {
       if (thisGen !== loadGeneration) return;
-      reportProgress(tabId, data);
+      if (loadWaiters.size) {
+        for (const tid of loadWaiters) reportProgress(tid, data);
+      } else {
+        reportProgress(tabId, data);
+      }
     },
   }).then(async (model) => {
     if (thisGen !== loadGeneration) throw new Error('Download cancelled');
     tts = model;
-    modelLoadingPromise = null;
+    if (modelLoadingPromise === p) modelLoadingPromise = null;
     await warmVoice(currentVoice, tabId);
     if (thisGen !== loadGeneration) throw new Error('Download cancelled');
   }).catch((err) => {
-    modelLoadingPromise = null;
+    // Only clear if this promise is still the active one — a cancelled load
+    // must not wipe the pointer to a newer in-flight load.
+    if (modelLoadingPromise === p) modelLoadingPromise = null;
     throw err;
   });
 
-  return modelLoadingPromise;
+  modelLoadingPromise = p;
+  return p;
 }
 
 function getAudioCtx() {
@@ -155,6 +164,7 @@ function clearLoopState() {
 
 async function runSentenceLoop(sentences, tabId, gen, speed = 1.0, voice, startIndex = 0, startOffset = 0) {
   if (voice) currentVoice = voice;
+  const epoch = ++loopEpoch;
   loopState = {
     sentences,
     tabId,
@@ -167,33 +177,41 @@ async function runSentenceLoop(sentences, tabId, gen, speed = 1.0, voice, startI
   };
   isPlaying = true;
 
+  const superseded = () => generation !== gen || epoch !== loopEpoch;
+
   if (!tts) {
     try {
       await loadModel(tabId, currentVoice);
     } catch (err) {
-      if (generation === gen) {
+      if (!superseded()) {
         send({ action: 'kokoro_error', error: err.message, tabId });
         isPlaying = false;
         clearLoopState();
       }
       return;
     }
-    if (!isPlaying || generation !== gen || !loopState) return;
+    if (!isPlaying || superseded() || !loopState) return;
   }
 
   let playedAny = false;
   for (let i = startIndex; i < sentences.length; i++) {
-    if (!isPlaying || generation !== gen || !loopState) break;
+    if (superseded() || !loopState) return;
+    if (!isPlaying) break;
+    // Paused before this sentence started — keep loopState for resume
     if (loopState.paused) return;
 
     loopState.sentenceIndex = i;
     const sentence = sentences[i];
     const offset = i === startIndex ? startOffset : 0;
     loopState.offsetSec = offset;
+    loopState.chunkStartedAt = null;
 
     try {
       const entry = await synthesizeToBuffer(sentence.text, speed, currentVoice);
-      if (!isPlaying || generation !== gen || !loopState || loopState.paused) break;
+      if (superseded() || !loopState) return;
+      // Paused while this sentence was synthesizing — resume replays it (cache hit)
+      if (loopState.paused) return;
+      if (!isPlaying) break;
 
       const played = playBuffer(entry, offset);
       loopState.chunkStartedAt = played.startedAt;
@@ -209,9 +227,13 @@ async function runSentenceLoop(sentences, tabId, gen, speed = 1.0, voice, startI
       });
 
       await waitForPlayback(played.duration);
+      if (superseded() || !loopState) return;
+      // Paused mid-chunk — pausePlayback already saved offsetSec; keep it
+      if (loopState.paused) return;
       loopState.offsetSec = 0;
+      loopState.chunkStartedAt = null;
     } catch (err) {
-      if (!isPlaying || generation !== gen) break;
+      if (superseded() || !isPlaying) break;
       send({ action: 'kokoro_error', error: err.message, tabId });
       isPlaying = false;
       clearLoopState();
@@ -219,7 +241,9 @@ async function runSentenceLoop(sentences, tabId, gen, speed = 1.0, voice, startI
     }
   }
 
-  if (isPlaying && generation === gen && loopState && !loopState.paused) {
+  if (superseded()) return;
+
+  if (isPlaying && loopState && !loopState.paused) {
     if (playedAny) {
       send({ action: 'kokoro_end', tabId });
     } else {
@@ -230,7 +254,7 @@ async function runSentenceLoop(sentences, tabId, gen, speed = 1.0, voice, startI
       });
     }
   }
-  if (generation === gen) {
+  if (!(loopState && loopState.paused)) {
     isPlaying = false;
     currentSource = null;
     clearLoopState();
@@ -239,11 +263,13 @@ async function runSentenceLoop(sentences, tabId, gen, speed = 1.0, voice, startI
 
 function pausePlayback() {
   if (!loopState || !isPlaying) return;
-  const elapsed = loopState.chunkStartedAt
-    ? (Date.now() - loopState.chunkStartedAt) / 1000
-    : 0;
-  const base = loopState.offsetSec || 0;
-  loopState.offsetSec = Math.min(base + elapsed, loopState.chunkDuration || base + elapsed);
+  // Only add elapsed time when a chunk is actually playing; while a sentence is
+  // still synthesizing there is no audio yet, so the saved offset stays as-is.
+  if (currentSource && loopState.chunkStartedAt) {
+    const elapsed = (Date.now() - loopState.chunkStartedAt) / 1000;
+    const base = loopState.offsetSec || 0;
+    loopState.offsetSec = Math.min(base + elapsed, loopState.chunkDuration || base + elapsed);
+  }
   loopState.paused = true;
   isPlaying = false;
   stopCurrentAudio();
@@ -328,13 +354,25 @@ chrome.runtime.onMessage.addListener((msg) => {
     const tabId = msg.tabId;
     const loadGen = loadGeneration;
     if (msg.voice) currentVoice = msg.voice;
+    if (tabId) loadWaiters.add(tabId);
     loadModel(tabId, msg.voice)
       .then(() => {
-        if (loadGen !== loadGeneration) return;
+        if (tabId) loadWaiters.delete(tabId);
+        if (loadGen !== loadGeneration && !tts) return;
         send({ action: 'kokoro_ready', tabId });
       })
       .catch((err) => {
-        if (loadGen !== loadGeneration || err.message === 'Download cancelled') return;
+        if (tabId) loadWaiters.delete(tabId);
+        // Model may have completed despite a stale generation (e.g. another
+        // tab cancelled) — report ready rather than leaving this tab loading.
+        if (tts) {
+          send({ action: 'kokoro_ready', tabId });
+          return;
+        }
+        if (loadGen !== loadGeneration || err.message === 'Download cancelled') {
+          send({ action: 'kokoro_load_cancelled', tabId });
+          return;
+        }
         send({ action: 'kokoro_error', error: err.message, tabId });
       });
     return;
@@ -343,6 +381,7 @@ chrome.runtime.onMessage.addListener((msg) => {
   if (msg.action === 'kokoro_load_cancel') {
     loadGeneration++;
     modelLoadingPromise = null;
+    if (msg.tabId) loadWaiters.delete(msg.tabId);
     // Model may have finished downloading while voice files were still loading —
     // treat as ready so the user isn't stuck with a broken AI voice state.
     if (tts) {
