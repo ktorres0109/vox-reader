@@ -5,6 +5,11 @@
   <title>Vox Reader chat fixture</title>
 </head>
 <body>
+  <script>
+    Object.defineProperty(window, '__voxReaderLoaded', {
+      get: () => document.documentElement.dataset.voxReaderLoaded === 'true',
+    });
+  </script>
   <main>
     <div data-message-author-role="user"><p>User question about smoke testing the reader extension.</p></div>
     <div data-message-author-role="assistant">

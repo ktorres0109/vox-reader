@@ -253,6 +253,7 @@
 
   if (window.__voxReaderLoaded) return;
   window.__voxReaderLoaded = true;
+  document.documentElement.dataset.voxReaderLoaded = 'true';
 
   const iframeBridgeNonce = crypto.randomUUID();
 
