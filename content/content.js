@@ -200,6 +200,11 @@
         publishFrameSelection();
         return;
       }
+      // A dynamically inserted frame may miss the top frame's initial
+      // handshake. A command from the actual parent can safely establish it.
+      if (!bridgeNonce && typeof d.nonce === 'string') {
+        bridgeNonce = d.nonce;
+      }
       if (!bridgeNonce || d.nonce !== bridgeNonce) return;
       if (d.source === IFRAME_READ_MSG) {
         applyFrameTheme(d);
