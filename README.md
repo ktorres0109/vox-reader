@@ -81,7 +81,7 @@ npm run fetch-deps
    - ✅ Correct: `vox-reader/` (or `vox-reader-main/`)  
    - ❌ Wrong: a subfolder like `vox-reader/content/`  
 
-5. You should see **Vox Reader** appear in the list with version **2.6.1**
+5. You should see **Vox Reader** appear in the list with version **2.6.2**
 
 6. Click the **puzzle piece** icon in Chrome’s toolbar → **pin** Vox Reader so the icon stays visible
 
@@ -169,7 +169,8 @@ If you edit files in this repo:
 | **Extension icon missing** | Puzzle piece → pin Vox Reader |
 | **Error about kokoro or vendor** | Run Step 2 again: `bash tools/fetch-deps.sh` or `npm run fetch-deps` |
 | **Works on one site but not another** | Some pages block extensions — try a normal article site first |
-| **Download stuck / want to cancel** | Click **Cancel download** on the progress panel, or **Cancel** on Export |
+| **Download stuck / want to cancel** | Wait until the bar says **Finishing AI voice setup…** — don’t cancel at 100%. If stuck, switch to **Classic** (e.g. Samantha) and try Play |
+| **Says “Done” but never read anything** | Refresh the page, open the player again, and press Play — or use Classic voice until AI voice shows **ready** |
 | **Still stuck** | `chrome://extensions` → Remove Vox Reader → load unpacked again from Step 3 |
 
 ---

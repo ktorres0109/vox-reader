@@ -40,9 +40,12 @@ function reportProgress(tabId, data) {
   });
 }
 
-async function warmVoice(voice) {
+async function warmVoice(voice, tabId) {
   if (!tts) return;
   const v = voice || currentVoice;
+  if (tabId) {
+    reportProgress(tabId, { progress: 99, status: 'Initializing AI voice…' });
+  }
   try {
     await tts.generate('Ready.', { voice: v, speed: 1 });
   } catch (_) { /* voice file fetch may fail offline — speak will retry */ }
@@ -51,7 +54,7 @@ async function warmVoice(voice) {
 async function loadModel(tabId, voice) {
   if (voice) currentVoice = voice;
   if (tts) {
-    await warmVoice(currentVoice);
+    await warmVoice(currentVoice, tabId);
     return;
   }
   if (modelLoadingPromise) return modelLoadingPromise;
@@ -68,7 +71,8 @@ async function loadModel(tabId, voice) {
     if (thisGen !== loadGeneration) throw new Error('Download cancelled');
     tts = model;
     modelLoadingPromise = null;
-    await warmVoice(currentVoice);
+    await warmVoice(currentVoice, tabId);
+    if (thisGen !== loadGeneration) throw new Error('Download cancelled');
   }).catch((err) => {
     modelLoadingPromise = null;
     throw err;
@@ -177,6 +181,7 @@ async function runSentenceLoop(sentences, tabId, gen, speed = 1.0, voice, startI
     if (!isPlaying || generation !== gen || !loopState) return;
   }
 
+  let playedAny = false;
   for (let i = startIndex; i < sentences.length; i++) {
     if (!isPlaying || generation !== gen || !loopState) break;
     if (loopState.paused) return;
@@ -193,6 +198,7 @@ async function runSentenceLoop(sentences, tabId, gen, speed = 1.0, voice, startI
       const played = playBuffer(entry, offset);
       loopState.chunkStartedAt = played.startedAt;
       loopState.chunkDuration = played.duration + offset;
+      playedAny = true;
 
       send({
         action: 'kokoro_chunk',
@@ -214,7 +220,15 @@ async function runSentenceLoop(sentences, tabId, gen, speed = 1.0, voice, startI
   }
 
   if (isPlaying && generation === gen && loopState && !loopState.paused) {
-    send({ action: 'kokoro_end', tabId });
+    if (playedAny) {
+      send({ action: 'kokoro_end', tabId });
+    } else {
+      send({
+        action: 'kokoro_error',
+        error: 'Nothing to read — reload the page or switch to Classic voice',
+        tabId,
+      });
+    }
   }
   if (generation === gen) {
     isPlaying = false;
@@ -329,7 +343,13 @@ chrome.runtime.onMessage.addListener((msg) => {
   if (msg.action === 'kokoro_load_cancel') {
     loadGeneration++;
     modelLoadingPromise = null;
-    send({ action: 'kokoro_load_cancelled', tabId: msg.tabId });
+    // Model may have finished downloading while voice files were still loading —
+    // treat as ready so the user isn't stuck with a broken AI voice state.
+    if (tts) {
+      send({ action: 'kokoro_ready', tabId: msg.tabId });
+    } else {
+      send({ action: 'kokoro_load_cancelled', tabId: msg.tabId });
+    }
     return;
   }
 
