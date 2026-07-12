@@ -25,7 +25,6 @@ async function waitForExtensionServiceWorker(context, timeoutMs = 30_000) {
 async function launchWithExtension() {
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vox-reader-pw-'));
   const launchOptions = {
-    channel: 'chrome',
     headless: false,
     ignoreDefaultArgs: ['--disable-extensions'],
     args: [
@@ -34,10 +33,6 @@ async function launchWithExtension() {
       '--allow-file-access-from-files',
     ],
   };
-  if (process.env.CHROME_PATH) {
-    launchOptions.executablePath = process.env.CHROME_PATH;
-  }
-
   const context = await chromium.launchPersistentContext(userDataDir, launchOptions);
 
   const serviceWorker = await waitForExtensionServiceWorker(context, 15_000);
