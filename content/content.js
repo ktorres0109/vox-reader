@@ -7,6 +7,7 @@
   const IFRAME_HL_MSG = 'vox-reader-iframe-highlight';
   const IFRAME_CLEAR_MSG = 'vox-reader-iframe-clear';
   const IFRAME_INIT_MSG = 'vox-reader-iframe-init';
+  const IFRAME_COMMAND_MSG = 'vox-reader-iframe-command';
   const isTopFrame = window.self === window.top;
 
   // Child frames: selection bridge + local wrap/highlight for cross-origin reads.
@@ -247,6 +248,18 @@
     });
 
     document.addEventListener('selectionchange', publishFrameSelection);
+    document.addEventListener('keydown', (event) => {
+      if (!bridgeNonce || !event.altKey) return;
+      const commandByKey = { p: 'play', s: 'stop', r: 'read', e: 'export' };
+      const command = commandByKey[event.key.toLowerCase()];
+      if (!command) return;
+      event.preventDefault();
+      window.top.postMessage({
+        source: IFRAME_COMMAND_MSG,
+        nonce: bridgeNonce,
+        command,
+      }, '*');
+    });
     publishFrameSelection();
     return;
   }
@@ -371,10 +384,27 @@
   }
 
   window.addEventListener('message', (ev) => {
-    if (!ev.data || ev.data.source !== IFRAME_SEL_MSG) return;
-    if (ev.data.nonce !== iframeBridgeNonce || !isKnownIframeWindow(ev.source)) return;
-    if (typeof ev.data.text !== 'string') return;
-    frameSelection = { text: ev.data.text.trim(), at: Date.now(), source: ev.source };
+    if (!ev.data || !isKnownIframeWindow(ev.source)) return;
+    if (ev.data.nonce !== iframeBridgeNonce) return;
+    if (ev.data.source === IFRAME_SEL_MSG) {
+      if (typeof ev.data.text !== 'string') return;
+      frameSelection = { text: ev.data.text.trim(), at: Date.now(), source: ev.source };
+      return;
+    }
+    if (ev.data.source === IFRAME_COMMAND_MSG) {
+      if (ev.data.command === 'play') {
+        ensurePlayerReady(() => {
+          if (!S.speaking && !S.paused) document.getElementById('vox-playpause-bar')?.click();
+          else pauseResume();
+        });
+      } else if (ev.data.command === 'stop') {
+        stop(true);
+      } else if (ev.data.command === 'read') {
+        ensurePlayerReady(() => readSelection().catch(() => {}));
+      } else if (ev.data.command === 'export') {
+        ensurePlayerReady(() => exportAudio());
+      }
+    }
   });
 
   const KOKORO_VOICES = [
@@ -486,6 +516,10 @@
   function initializeIframeBridges() {
     broadcastToIframes({ source: IFRAME_INIT_MSG });
   }
+
+  initializeIframeBridges();
+  setTimeout(initializeIframeBridges, 500);
+  setTimeout(initializeIframeBridges, 1500);
 
   function iframeThemePayload() {
     return {
@@ -2757,8 +2791,10 @@
       syncExportUI();
       if (S.voiceEngine === 'kokoro' && !S.kokoroModelCached) {
         setKokoroUIState('error');
+        setStatus(wasPendingExport ? 'Export cancelled' : 'Download cancelled');
+      } else if (wasPendingExport) {
+        setStatus('Export cancelled');
       }
-      setStatus(wasPendingExport ? 'Export cancelled' : 'Download cancelled');
       return;
     }
 

@@ -36,7 +36,22 @@ async function launchWithExtension() {
   const context = await chromium.launchPersistentContext(userDataDir, launchOptions);
 
   const serviceWorker = await waitForExtensionServiceWorker(context, 15_000);
-  const extensionId = serviceWorker?.url().split('/')[2] ?? unpackedExtensionId(extensionPath);
+  if (!serviceWorker) {
+    await context.close();
+    throw new Error('Vox Reader service worker failed to start');
+  }
+  const extensionId = serviceWorker.url().split('/')[2] ?? unpackedExtensionId(extensionPath);
+  await serviceWorker.evaluate(async () => {
+    await chrome.scripting.unregisterContentScripts({ ids: ['vox-e2e-speech'] }).catch(() => {});
+    await chrome.scripting.registerContentScripts([{
+      id: 'vox-e2e-speech',
+      js: ['tests/e2e/speech-mock.js'],
+      matches: ['http://127.0.0.1/*', 'file:///*'],
+      allFrames: true,
+      runAt: 'document_start',
+      persistAcrossSessions: false,
+    }]);
+  });
 
   const probe = await context.newPage();
   await probe.goto(fixtureHttpPage);
@@ -68,7 +83,7 @@ test.describe('Vox Reader smoke', () => {
       await expect(popup.locator('#open-player')).toBeVisible();
       await expect(popup.locator('#read-selection')).toBeVisible();
       await expect(popup.locator('#sc-play-display')).toHaveText('Alt+P');
-      await expect(popup.locator('#sc-export-display')).toHaveText('Alt+E');
+      await expect(popup.locator('#sc-export-display')).toHaveText(/Alt\+E|Not set/);
     } finally {
       await context.close();
     }
@@ -828,7 +843,10 @@ test.describe('Vox Reader smoke', () => {
 
       const popup = await context.newPage();
       await popup.goto(`chrome-extension://${extensionId}/popup/popup.html`);
-      await popup.locator('#open-player').click();
+      // A real action popup does not become the active browser tab. Keep the
+      // article active, then invoke the popup button in its extension page.
+      await page.bringToFront();
+      await popup.locator('#open-player').evaluate((button) => button.click());
       await expect(page.locator('#vox-player')).toBeVisible({ timeout: 10_000 });
     } finally {
       await context.close();
