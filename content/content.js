@@ -317,6 +317,8 @@
     exportScope: 'all',
     exportBitrate: 128,
     playAfterExport: false,
+    pendingPlayAfterKokoro: false,
+    pendingPlayStartIdx: 0,
     kreaderSync: false,
     chatDomDirty: false,          // chat DOM changed since last wrap
     chatReadScope: 'all',         // all | latest | single (chat sites)
@@ -1342,7 +1344,9 @@
 
   function kokoroSpeakFrom(idx) {
     if (!S.kokoroModelCached) {
-      setStatus('Install AI voice first — downloading…', true);
+      S.pendingPlayAfterKokoro = true;
+      S.pendingPlayStartIdx = idx;
+      setStatus('Downloading AI voice… reading will start when ready', true);
       startKokoroDownload();
       return;
     }
@@ -1904,11 +1908,12 @@
     sendMsg({ action: 'kokoro_load_cancel' });
     S.kokoroLoading = false;
     S.kokoroDownloadPct = 0;
+    S.pendingPlayAfterKokoro = false;
     const wasPendingExport = S.pendingExport;
     S.pendingExport = false;
     syncInstallUI();
     syncExportUI();
-    setStatus(wasPendingExport ? 'Export cancelled' : 'Download cancelled');
+    setStatus(wasPendingExport ? 'Cancelling export…' : 'Cancelling download…');
   }
 
   function updateKokoroInstallProgress(pct, file, status) {
@@ -1919,9 +1924,16 @@
     if (bar) bar.value = Math.max(0, Math.min(100, pct));
     if (fileEl) fileEl.textContent = file || '';
     if (statusEl) {
-      statusEl.textContent = pct > 0
-        ? `Downloading Kokoro model… ${pct}%`
-        : (status || 'Downloading Kokoro model (~86MB) — required once');
+      const initStatus = status || '';
+      if (/initializ/i.test(initStatus)) {
+        statusEl.textContent = initStatus;
+      } else if (pct >= 99 && S.kokoroLoading) {
+        statusEl.textContent = 'Finishing AI voice setup…';
+      } else if (pct > 0) {
+        statusEl.textContent = `Downloading AI voice… ${pct}%`;
+      } else {
+        statusEl.textContent = initStatus || 'Downloading AI voice (~86MB) — required once';
+      }
     }
   }
 
@@ -2243,6 +2255,7 @@
     document.getElementById('eng-classic').onclick = () => {
       if (S.voiceEngine === 'classic') return;
       stop(false);
+      S.pendingPlayAfterKokoro = false;
       S.voiceEngine = 'classic'; savePrefs(); syncEngineUI();
       document.getElementById('eng-classic').setAttribute('aria-pressed', 'true');
       document.getElementById('eng-kokoro').setAttribute('aria-pressed', 'false');
@@ -2515,10 +2528,25 @@
       S.kokoroDownloadPct = 100;
       saveKokoroFlag();
       syncExportUI();
+      syncInstallUI();
       if (S.voiceEngine === 'kokoro') {
         setKokoroUIState('ready');
-        updateKokoroInstallProgress(100, '', 'Download complete');
-        setStatus('AI voice ready — press Play', true);
+        updateKokoroInstallProgress(100, '', 'AI voice ready');
+        if (S.pendingPlayAfterKokoro) {
+          S.pendingPlayAfterKokoro = false;
+          const idx = S.pendingPlayStartIdx;
+          setStatus('AI voice ready — starting…', true);
+          setTimeout(() => {
+            if (S.voiceEngine !== 'kokoro' || !S.kokoroModelCached) return;
+            if (!S.words.length || rootsNeedRewrap()) {
+              prepareAndRewrap(() => speakFrom(idx >= 0 ? idx : findFirstVisibleWordIdx())).catch(() => {});
+            } else {
+              speakFrom(idx >= 0 ? idx : findFirstVisibleWordIdx());
+            }
+          }, 150);
+        } else {
+          setStatus('AI voice ready — press Play', true);
+        }
       } else if (S.pendingExport) {
         setStatus('AI voice ready — starting export…', true);
       }
@@ -2541,6 +2569,7 @@
     if (msg.action === 'kokoro_load_cancelled') {
       S.kokoroLoading = false;
       S.kokoroDownloadPct = 0;
+      S.pendingPlayAfterKokoro = false;
       const wasPendingExport = S.pendingExport;
       S.pendingExport = false;
       syncInstallUI();
@@ -2584,6 +2613,7 @@
       const wasPendingExport = S.pendingExport;
       S.kokoroLoading = false;
       S.pendingExport = false;
+      S.pendingPlayAfterKokoro = false;
       if (wasLoading) invalidateKokoroCache();
       syncInstallUI();
       syncExportUI();
