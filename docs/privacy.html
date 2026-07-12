@@ -16,18 +16,21 @@
 </head>
 <body>
   <h1>Vox Reader — Privacy Policy</h1>
-  <p><strong>Last updated:</strong> July 2026 · extension v2.6.4</p>
-  <p>Vox Reader reads web pages aloud with highlighting. <strong>Processing happens on your device.</strong> We do not collect, sell, or transmit your reading data to Vox Reader servers.</p>
+  <p><strong>Last updated:</strong> July 2026 · extension v2.6.5</p>
+  <p>Vox Reader reads web pages aloud with highlighting. <strong>Processing happens on your device.</strong></p>
+
+  <h2>What we collect</h2>
+  <p><strong>We do not collect, transmit, or sell your personal data.</strong> Vox Reader does not run analytics, advertising, or usage tracking.</p>
 
   <h2>On-device data</h2>
   <ul>
     <li>Page text you choose to read</li>
-    <li>Preferences (speed, voice, colors) via Chrome Sync if enabled</li>
+    <li>Preferences (speed, voice, colors, shortcuts) via Chrome Sync if enabled</li>
     <li>Kokoro AI model cache in extension local storage</li>
   </ul>
 
   <h2>Network use</h2>
-  <p>The extension may download the Kokoro model and voice files from Hugging Face when you enable or export with the AI voice. No page content is sent for cloud TTS.</p>
+  <p>The extension may download the Kokoro model and voice files from Hugging Face when you enable or export with the AI voice. Developer setup may also fetch the extension’s bundled dependencies. No page content is sent for cloud TTS, and Vox Reader has no reading or TTS servers.</p>
 
   <h2>Optional KReader sync</h2>
   <p>When enabled, the extension contacts <code>127.0.0.1:8766</code> on your computer only. Off by default.</p>
@@ -43,7 +46,19 @@
     <tr><td>&lt;all_urls&gt;</td><td>User-initiated reading on sites you visit</td></tr>
   </table>
 
+  <h2>Third parties</h2>
+  <ul>
+    <li><strong>Kokoro 82M (ONNX)</strong> — open-source neural TTS; model files are downloaded from Hugging Face.</li>
+    <li><strong>ONNX Runtime Web</strong> — runs the model locally in your browser using WebAssembly.</li>
+  </ul>
+
+  <h2>Children</h2>
+  <p>Vox Reader is not directed at children under 13.</p>
+
+  <h2>Changes</h2>
+  <p>We may update this policy as the extension evolves. Material changes will be reflected in the repository and extension listing.</p>
+
   <h2>Contact</h2>
-  <p><a href="https://github.com/ktorres0109/vox-reader">github.com/ktorres0109/vox-reader</a></p>
+  <p>Open an issue at <a href="https://github.com/ktorres0109/vox-reader">github.com/ktorres0109/vox-reader</a> for privacy questions.</p>
 </body>
 </html>
