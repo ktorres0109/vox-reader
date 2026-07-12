@@ -266,6 +266,7 @@
   }
 
   function handleNavigation() {
+    S.pendingPlayAfterKokoro = false;
     if (S.speaking || S.paused) stop(false);
     else { stopTTS(); stopTicker(); clearHL(); }
     if (S.immersiveActive) exitImmersive();
@@ -697,10 +698,7 @@
   }
 
   function rootsNeedRewrap() {
-    if (!S.words.length || S.chatDomDirty) {
-      S.chatDomDirty = false;
-      return true;
-    }
+    if (!S.words.length || S.chatDomDirty) return true;
     return getReadableRoots().some(root => {
       const text = (root.innerText || '').trim();
       return text.length >= 20 && !root.querySelector('.vox-word');
@@ -774,7 +772,9 @@
     return load;
   }
 
-  async function prepareAndRewrap(cb, opts = {}) {
+  let _prepareChain = Promise.resolve();
+
+  async function prepareAndRewrapInner(cb, opts = {}) {
     const chatRoots = getChatRoots();
     const needsFullHistory = opts.forceFullHistory || (
       chatRoots.length && !chatRoots.some(r => r.querySelector('.vox-word'))
@@ -783,7 +783,19 @@
       setStatus('Loading conversation…', true);
       await loadVirtualizedChatHistory();
     }
-    rewrap(cb);
+    await new Promise((resolve) => {
+      rewrap(() => {
+        try { if (cb) cb(); } finally { resolve(); }
+      });
+    });
+  }
+
+  // Serialized: overlapping calls (e.g. read-selection racing the Play button)
+  // must not interleave their unwrap/wrap passes.
+  function prepareAndRewrap(cb, opts = {}) {
+    const run = _prepareChain.then(() => prepareAndRewrapInner(cb, opts));
+    _prepareChain = run.catch(() => {});
+    return run;
   }
 
   function isVoxInternalNode(node) {
@@ -1116,6 +1128,7 @@
     // immersive mode wraps its own overlay content and rewrapping would
     // strip those spans and then wrap the wrong root.
     if (S.immersiveActive) { if (cb) cb(); return; }
+    S.chatDomDirty = false;
     unwrap();
     const roots = getReadableRoots();
     wrapWords(roots);
@@ -1146,7 +1159,7 @@
     if (!S.highlightSentence || si < 0) return;
     const words = getSentenceWords(si);
     if (!words.length) return;
-    words.forEach(w => w.el.classList.add('vox-sentence-active'));
+    words.forEach(w => { if (w.el) w.el.classList.add('vox-sentence-active'); });
   }
 
   function scheduleOverlayRefresh() {
@@ -1288,6 +1301,7 @@
 
     const endIdx = S.speakEndIdx != null ? S.speakEndIdx : S.words.length - 1;
     const text = S.words.slice(idx, endIdx + 1).map(w => w.text).join(' ');
+    if (!text.trim()) { resetPlaybackState(); return; }
     const u = new SpeechSynthesisUtterance(text);
     u.rate = S.speed; u.lang = 'en-US';
     if (S.voice) u.voice = S.voice;
@@ -1400,6 +1414,13 @@
     }
   }
 
+  function resetPlaybackState() {
+    S.speaking = false; S.paused = false;
+    document.documentElement.classList.remove('vox-reading');
+    updatePlayBtn();
+    setStatus('Nothing to read here');
+  }
+
   function kokoroSpeakFrom(idx) {
     if (!S.kokoroModelCached) {
       S.pendingPlayAfterKokoro = true;
@@ -1412,10 +1433,10 @@
     stopTicker(); clearHL();
     S.lastKokoroChunk = null;
     S.currentSentence = -1;
-    if (!S.words.length) return;
+    if (!S.words.length) { resetPlaybackState(); return; }
 
     const sentences = getSentencesFrom(idx, S.speakEndIdx);
-    if (!sentences.length) return;
+    if (!sentences.length) { resetPlaybackState(); return; }
 
     S.currentWord = idx;
 
@@ -1460,6 +1481,8 @@
 
   function stop(reset = false) {
     const cancellingExportWait = (S.pendingExport || S.exporting) && !S.speaking;
+    const droppedQueuedExport = S.pendingExport && S.speaking;
+    S.pendingPlayAfterKokoro = false;
     if (S.exporting) {
       sendMsg({ action: 'kokoro_export_cancel' });
       S.exporting = false;
@@ -1484,7 +1507,7 @@
     if (reset) S.currentWord = 0;
     document.documentElement.classList.remove('vox-reading');
     updatePlayBtn();
-    setStatus(cancellingExportWait ? 'Export cancelled' : 'Stopped');
+    setStatus((cancellingExportWait || droppedQueuedExport) ? 'Export cancelled' : 'Stopped');
     savePrefs();
   }
 
@@ -1509,7 +1532,9 @@
     if (!S.words.length) return 0;
     const vh = window.innerHeight || document.documentElement.clientHeight;
     for (let i = 0; i < S.words.length; i++) {
-      const rect = S.words[i].el.getBoundingClientRect();
+      const el = S.words[i].el;
+      if (!el) continue; // iframe reads have no host-page elements
+      const rect = el.getBoundingClientRect();
       if (rect.bottom > 0 && rect.top < vh) return i;
     }
     return 0;
@@ -2347,7 +2372,11 @@
     prog.onchange = (e) => {
       if (!S.words.length) return;
       S.scrubbing = false;
-      const idx = Math.floor((e.target.value / 1000) * (S.words.length - 1));
+      let idx = Math.floor((e.target.value / 1000) * (S.words.length - 1));
+      // During a bounded read (selection), keep the scrub inside the read range
+      if ((S.speaking || S.paused) && S.speakEndIdx != null && idx > S.speakEndIdx) {
+        idx = S.speakEndIdx;
+      }
       S.currentWord = idx;
       highlightAt(idx);
       if (S.speaking || S.paused) speakFrom(idx);
@@ -2548,6 +2577,7 @@
 
     // Kokoro responses from offscreen (routed through SW)
     if (msg.action === 'kokoro_chunk') {
+      if (!S.speaking) return; // stale chunk from a stopped session
       applyKokoroChunk(msg);
       setStatus('Playing', true);
       updatePlayBtn();
@@ -2574,7 +2604,13 @@
       if (S.voiceEngine === 'kokoro') {
         setKokoroUIState('ready');
         updateKokoroInstallProgress(100, '', 'AI voice ready');
-        if (S.pendingPlayAfterKokoro) {
+        if (S.pendingPlayAfterKokoro && S.pendingExport) {
+          // Both Play and Export queued on this download — export wins,
+          // playback starts when the export finishes (playAfterExport).
+          S.pendingPlayAfterKokoro = false;
+          S.playAfterExport = true;
+          setStatus('AI voice ready — starting export…', true);
+        } else if (S.pendingPlayAfterKokoro) {
           S.pendingPlayAfterKokoro = false;
           const idx = S.pendingPlayStartIdx;
           setStatus('AI voice ready — starting…', true);
@@ -2646,7 +2682,8 @@
       S.exporting = false;
       S.playAfterExport = false;
       syncExportUI();
-      setStatus('Export error: ' + (msg.error || 'unknown'));
+      const cancelled = /cancel/i.test(msg.error || '');
+      setStatus(cancelled ? 'Export cancelled' : 'Export error: ' + (msg.error || 'unknown'));
       return;
     }
 
