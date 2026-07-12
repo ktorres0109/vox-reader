@@ -154,8 +154,8 @@ test.describe('Vox Reader smoke', () => {
 
       await sendToActiveTab(context, { action: 'read_selection', text: selected });
       await expect(page.locator('#vox-player')).toBeVisible({ timeout: 10_000 });
-      await expect(page.locator('#vox-status')).toContainText(/Reading selection/i, { timeout: 10_000 });
       await expect(frame.locator('.vox-word')).not.toHaveCount(0);
+      await expect(page.locator('#vox-status')).toContainText(/Playing|Done/i, { timeout: 10_000 });
     } finally {
       await context.close();
     }
