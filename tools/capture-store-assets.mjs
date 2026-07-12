@@ -9,7 +9,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { unpackedExtensionId } from './extension-id.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const outDir = path.join(root, 'store-assets');
@@ -20,18 +19,21 @@ if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
 
 const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vox-store-cap-'));
 const launchOptions = {
-  channel: 'chrome',
   headless: false,
   ignoreDefaultArgs: ['--disable-extensions'],
   args: [
     `--disable-extensions-except=${root}`,
     `--load-extension=${root}`,
+    '--allow-file-access-from-files',
   ],
 };
-if (process.env.CHROME_PATH) launchOptions.executablePath = process.env.CHROME_PATH;
 
 const context = await chromium.launchPersistentContext(userDataDir, launchOptions);
-const extensionId = unpackedExtensionId(root);
+let serviceWorker = context.serviceWorkers().find((worker) => worker.url().startsWith('chrome-extension://'));
+if (!serviceWorker) {
+  serviceWorker = await context.waitForEvent('serviceworker', { timeout: 15_000 });
+}
+const extensionId = serviceWorker.url().split('/')[2];
 
 async function waitForReader(page) {
   const ready = await page.waitForFunction(

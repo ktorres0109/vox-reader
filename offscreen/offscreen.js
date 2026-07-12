@@ -18,7 +18,7 @@ let loadGeneration = 0;
 let modelLoadingPromise = null;
 let currentVoice = 'af_bella';
 
-/** @type {{ sentences: object[], tabId: number, gen: number, speed: number, voice: string, sentenceIndex: number, offsetSec: number, paused: boolean, chunkStartedAt?: number, chunkDuration?: number } | null} */
+/** @type {{ sentences: object[], tabId: number, gen: number, playbackId: number, speed: number, voice: string, sentenceIndex: number, offsetSec: number, paused: boolean, chunkStartedAt?: number, chunkDuration?: number } | null} */
 let loopState = null;
 let loopEpoch = 0; // increments on every runSentenceLoop start so superseded loops exit
 const synthCache = new Map();
@@ -148,13 +148,24 @@ function playBuffer(entry, offsetSec = 0) {
 
 function waitForPlayback(durationSec) {
   return new Promise((resolve, reject) => {
-    if (!currentSource) {
+    const source = currentSource;
+    if (!source) {
       resolve();
       return;
     }
-    currentSource.onended = resolve;
-    currentSource.onerror = reject;
-    setTimeout(resolve, (durationSec + 1) * 1000);
+    let settled = false;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      source.onended = null;
+      source.onerror = null;
+      if (error) reject(error);
+      else resolve();
+    };
+    source.onended = () => finish();
+    source.onerror = (error) => finish(error);
+    const timer = setTimeout(() => finish(), (durationSec + 1) * 1000);
   });
 }
 
@@ -162,13 +173,14 @@ function clearLoopState() {
   loopState = null;
 }
 
-async function runSentenceLoop(sentences, tabId, gen, speed = 1.0, voice, startIndex = 0, startOffset = 0) {
+async function runSentenceLoop(sentences, tabId, gen, playbackId, speed = 1.0, voice, startIndex = 0, startOffset = 0) {
   if (voice) currentVoice = voice;
   const epoch = ++loopEpoch;
   loopState = {
     sentences,
     tabId,
     gen,
+    playbackId,
     speed: speed || 1.0,
     voice: voice || currentVoice,
     sentenceIndex: startIndex,
@@ -184,7 +196,7 @@ async function runSentenceLoop(sentences, tabId, gen, speed = 1.0, voice, startI
       await loadModel(tabId, currentVoice);
     } catch (err) {
       if (!superseded()) {
-        send({ action: 'kokoro_error', error: err.message, tabId });
+        send({ action: 'kokoro_error', error: err.message, tabId, playbackId });
         isPlaying = false;
         clearLoopState();
       }
@@ -224,6 +236,7 @@ async function runSentenceLoop(sentences, tabId, gen, speed = 1.0, voice, startI
         startedAt: played.startedAt,
         duration: played.duration,
         tabId,
+        playbackId,
       });
 
       await waitForPlayback(played.duration);
@@ -234,7 +247,7 @@ async function runSentenceLoop(sentences, tabId, gen, speed = 1.0, voice, startI
       loopState.chunkStartedAt = null;
     } catch (err) {
       if (superseded() || !isPlaying) break;
-      send({ action: 'kokoro_error', error: err.message, tabId });
+      send({ action: 'kokoro_error', error: err.message, tabId, playbackId });
       isPlaying = false;
       clearLoopState();
       return;
@@ -245,12 +258,13 @@ async function runSentenceLoop(sentences, tabId, gen, speed = 1.0, voice, startI
 
   if (isPlaying && loopState && !loopState.paused) {
     if (playedAny) {
-      send({ action: 'kokoro_end', tabId });
+      send({ action: 'kokoro_end', tabId, playbackId });
     } else {
       send({
         action: 'kokoro_error',
         error: 'Nothing to read — reload the page or switch to Classic voice',
         tabId,
+        playbackId,
       });
     }
   }
@@ -278,23 +292,22 @@ function pausePlayback() {
 function resumePlayback() {
   if (!loopState || !loopState.paused) return;
   loopState.paused = false;
-  const { sentences, tabId, gen, speed, voice, sentenceIndex, offsetSec } = loopState;
+  const { sentences, tabId, gen, playbackId, speed, voice, sentenceIndex, offsetSec } = loopState;
   isPlaying = true;
-  runSentenceLoop(sentences, tabId, gen, speed, voice, sentenceIndex, offsetSec);
+  runSentenceLoop(sentences, tabId, gen, playbackId, speed, voice, sentenceIndex, offsetSec);
 }
 
 async function exportAudio(sentences, tabId, speed, voice, exportGen, filename, format = 'wav', mp3Bitrate = 128) {
-  if (!tts) {
-    await loadModel(tabId, voice);
-  }
-  if (exportGen !== exportGeneration) return;
-
-  exportInProgress = true;
   const sr = 24000;
   const chunks = [];
   let totalLen = 0;
 
   try {
+    if (!tts) {
+      await loadModel(tabId, voice);
+    }
+    if (exportGen !== exportGeneration) return;
+
     for (let i = 0; i < sentences.length; i++) {
       if (exportGen !== exportGeneration) {
         send({ action: 'kokoro_export_error', tabId, error: 'Export cancelled' });
@@ -326,10 +339,16 @@ async function exportAudio(sentences, tabId, speed, voice, exportGen, filename, 
     }
 
     const useMp3 = format === 'mp3';
+    const wavBytes = totalLen * 2 + 44;
+    // Chrome extension messages have a finite IPC payload. Keep base64 safely
+    // below that limit and tell the user to choose MP3 instead of hanging.
+    if (!useMp3 && wavBytes > 24 * 1024 * 1024) {
+      throw new Error('WAV export is too large — choose MP3 or export a shorter range');
+    }
     const kbps = [96, 128, 192].includes(mp3Bitrate) ? mp3Bitrate : 128;
     const audioBuffer = useMp3 ? encodeMp3(merged, sr, kbps) : encodeWav(merged, sr);
     const ext = useMp3 ? 'mp3' : 'wav';
-    send({
+    await chrome.runtime.sendMessage({
       action: 'kokoro_export_ready',
       tabId,
       audioBase64: bytesToBase64(audioBuffer),
@@ -357,12 +376,16 @@ chrome.runtime.onMessage.addListener((msg) => {
     if (tabId) loadWaiters.add(tabId);
     loadModel(tabId, msg.voice)
       .then(() => {
+        const stillWaiting = !tabId || loadWaiters.has(tabId);
         if (tabId) loadWaiters.delete(tabId);
+        if (!stillWaiting) return;
         if (loadGen !== loadGeneration && !tts) return;
         send({ action: 'kokoro_ready', tabId });
       })
       .catch((err) => {
+        const stillWaiting = !tabId || loadWaiters.has(tabId);
         if (tabId) loadWaiters.delete(tabId);
+        if (!stillWaiting) return;
         // Model may have completed despite a stale generation (e.g. another
         // tab cancelled) — report ready rather than leaving this tab loading.
         if (tts) {
@@ -379,9 +402,14 @@ chrome.runtime.onMessage.addListener((msg) => {
   }
 
   if (msg.action === 'kokoro_load_cancel') {
+    if (msg.tabId) loadWaiters.delete(msg.tabId);
+    // Cancelling in one tab must not abort the shared model load for other tabs.
+    if (loadWaiters.size > 0) {
+      send({ action: 'kokoro_load_cancelled', tabId: msg.tabId });
+      return;
+    }
     loadGeneration++;
     modelLoadingPromise = null;
-    if (msg.tabId) loadWaiters.delete(msg.tabId);
     // Model may have finished downloading while voice files were still loading —
     // treat as ready so the user isn't stuck with a broken AI voice state.
     if (tts) {
@@ -400,7 +428,12 @@ chrome.runtime.onMessage.addListener((msg) => {
 
   if (msg.action === 'kokoro_speak') {
     if (exportInProgress) {
-      send({ action: 'kokoro_error', error: 'Export in progress — try again shortly', tabId: msg.tabId });
+      send({
+        action: 'kokoro_error',
+        error: 'Export in progress — try again shortly',
+        tabId: msg.tabId,
+        playbackId: msg.playbackId,
+      });
       return;
     }
     if (msg.voice) currentVoice = msg.voice;
@@ -408,23 +441,33 @@ chrome.runtime.onMessage.addListener((msg) => {
     stopCurrentAudio();
     clearLoopState();
     const thisGen = ++generation;
-    setTimeout(() => {
-      runSentenceLoop(msg.sentences, msg.tabId, thisGen, msg.speed || 1.0, msg.voice);
-    }, 30);
+    // Start synchronously through the first await so an immediate Pause always
+    // finds loopState instead of racing a delayed startup timer.
+    runSentenceLoop(
+      msg.sentences,
+      msg.tabId,
+      thisGen,
+      msg.playbackId,
+      msg.speed || 1.0,
+      msg.voice,
+    );
     return;
   }
 
   if (msg.action === 'kokoro_pause') {
+    if (loopState && msg.playbackId !== loopState.playbackId) return;
     pausePlayback();
     return;
   }
 
   if (msg.action === 'kokoro_resume') {
+    if (loopState && msg.playbackId !== loopState.playbackId) return;
     resumePlayback();
     return;
   }
 
   if (msg.action === 'kokoro_stop') {
+    if (loopState && msg.playbackId != null && msg.playbackId !== loopState.playbackId) return;
     isPlaying = false;
     generation++;
     stopCurrentAudio();
@@ -434,6 +477,7 @@ chrome.runtime.onMessage.addListener((msg) => {
 
   if (msg.action === 'kokoro_export_cancel') {
     exportGeneration++;
+    exportInProgress = false;
     return;
   }
 
@@ -443,6 +487,7 @@ chrome.runtime.onMessage.addListener((msg) => {
     stopCurrentAudio();
     clearLoopState();
     const exportGen = ++exportGeneration;
+    exportInProgress = true;
     if (msg.voice) currentVoice = msg.voice;
     exportAudio(msg.sentences, msg.tabId, msg.speed || 1.0, msg.voice, exportGen, msg.filename, msg.format || 'wav', msg.mp3Bitrate || 128)
       .catch((err) => send({ action: 'kokoro_export_error', error: err.message, tabId: msg.tabId }));

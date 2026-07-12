@@ -1,6 +1,6 @@
 # Vox Reader — Privacy Policy
 
-**Last updated:** July 2026 · extension v2.6.4
+**Last updated:** July 2026 · extension v2.6.5
 
 Vox Reader is a Chrome extension that reads web pages aloud with word highlighting. Your privacy is a core design goal: **reading and speech synthesis happen on your device**.
 

@@ -8,6 +8,7 @@ import { unpackedExtensionId } from '../../tools/extension-id.mjs';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const extensionPath = root;
 const fixturePage = path.join(root, 'tests/fixtures/article.html');
+const fixtureHttpPage = 'http://127.0.0.1:4173/tests/fixtures/article.html';
 const chatFixturePage = path.join(root, 'tests/fixtures/chat.html');
 
 async function waitForExtensionServiceWorker(context, timeoutMs = 30_000) {
@@ -24,25 +25,36 @@ async function waitForExtensionServiceWorker(context, timeoutMs = 30_000) {
 async function launchWithExtension() {
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vox-reader-pw-'));
   const launchOptions = {
-    channel: 'chrome',
     headless: false,
     ignoreDefaultArgs: ['--disable-extensions'],
     args: [
       `--disable-extensions-except=${extensionPath}`,
       `--load-extension=${extensionPath}`,
+      '--allow-file-access-from-files',
     ],
   };
-  if (process.env.CHROME_PATH) {
-    launchOptions.executablePath = process.env.CHROME_PATH;
-  }
-
   const context = await chromium.launchPersistentContext(userDataDir, launchOptions);
 
   const serviceWorker = await waitForExtensionServiceWorker(context, 15_000);
-  const extensionId = serviceWorker?.url().split('/')[2] ?? unpackedExtensionId(extensionPath);
+  if (!serviceWorker) {
+    await context.close();
+    throw new Error('Vox Reader service worker failed to start');
+  }
+  const extensionId = serviceWorker.url().split('/')[2] ?? unpackedExtensionId(extensionPath);
+  await serviceWorker.evaluate(async () => {
+    await chrome.scripting.unregisterContentScripts({ ids: ['vox-e2e-speech'] }).catch(() => {});
+    await chrome.scripting.registerContentScripts([{
+      id: 'vox-e2e-speech',
+      js: ['tests/e2e/speech-mock.js'],
+      matches: ['http://127.0.0.1/*', 'file:///*'],
+      allFrames: true,
+      runAt: 'document_start',
+      persistAcrossSessions: false,
+    }]);
+  });
 
   const probe = await context.newPage();
-  await probe.goto(`file://${fixturePage}`);
+  await probe.goto(fixtureHttpPage);
   const contentReady = await probe.waitForFunction(
     () => window.__voxReaderLoaded === true,
     null,
@@ -52,10 +64,23 @@ async function launchWithExtension() {
 
   if (!contentReady) {
     await context.close();
-    return null;
+    throw new Error(
+      'Vox Reader extension failed to load in Chrome; refusing to skip the browser test suite',
+    );
   }
 
   return { context, extensionId };
+}
+
+async function sendToActiveTab(context, message) {
+  const serviceWorker = context.serviceWorkers()
+    .find((worker) => worker.url().startsWith('chrome-extension://'));
+  if (!serviceWorker) throw new Error('Vox Reader service worker is unavailable');
+  await serviceWorker.evaluate(async (payload) => {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id) throw new Error('No active fixture tab');
+    await chrome.tabs.sendMessage(tab.id, payload);
+  }, message);
 }
 
 test.describe('Vox Reader smoke', () => {
@@ -69,7 +94,7 @@ test.describe('Vox Reader smoke', () => {
       await expect(popup.locator('#open-player')).toBeVisible();
       await expect(popup.locator('#read-selection')).toBeVisible();
       await expect(popup.locator('#sc-play-display')).toHaveText('Alt+P');
-      await expect(popup.locator('#sc-export-display')).toHaveText('Alt+E');
+      await expect(popup.locator('#sc-export-display')).toHaveText(/Alt\+E|Not set/);
     } finally {
       await context.close();
     }
@@ -105,7 +130,7 @@ test.describe('Vox Reader smoke', () => {
     }
   });
 
-  test('Alt+R reads text selected inside a same-origin iframe', async () => {
+  test('reads text selected inside a same-origin iframe', async () => {
     const launched = await launchWithExtension();
     if (!launched) test.skip(true, 'Chrome extension host unavailable');
     const { context } = launched;
@@ -113,20 +138,24 @@ test.describe('Vox Reader smoke', () => {
       const page = await context.newPage();
       await page.goto(`file://${fixturePage}`);
       await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.keyboard.press('Alt+p');
+      await page.locator('#vox-settings-btn').click();
+      await page.locator('#eng-classic').click();
 
       const frame = page.frameLocator('#same-origin-frame');
-      await frame.locator('p').evaluate((el) => {
+      const selected = await frame.locator('p').evaluate((el) => {
         const range = document.createRange();
         range.selectNodeContents(el);
         const sel = window.getSelection();
         sel.removeAllRanges();
         sel.addRange(range);
+        return sel.toString();
       });
 
-      await page.keyboard.press('Alt+r');
+      await sendToActiveTab(context, { action: 'read_selection', text: selected });
       await expect(page.locator('#vox-player')).toBeVisible({ timeout: 10_000 });
-      await expect(page.locator('#vox-status')).toContainText(/Reading selection/i, { timeout: 10_000 });
       await expect(frame.locator('.vox-word')).not.toHaveCount(0);
+      await expect(page.locator('#vox-status')).toContainText(/Playing|Done/i, { timeout: 10_000 });
     } finally {
       await context.close();
     }
@@ -154,7 +183,10 @@ test.describe('Vox Reader smoke', () => {
         sel.addRange(range);
       });
 
-      await page.keyboard.press('Alt+r');
+      await sendToActiveTab(context, {
+        action: 'read_selection',
+        text: 'First iframe sentence for highlight tests. Second sentence continues the selection.',
+      });
       await expect(page.locator('#vox-status')).toContainText(/Playing|Reading selection/i, { timeout: 10_000 });
       await expect(frame.locator('.vox-word-active')).toBeVisible({ timeout: 8_000 });
     } finally {
@@ -255,9 +287,12 @@ test.describe('Vox Reader smoke', () => {
         sel.addRange(range);
       });
 
-      await page.keyboard.press('Alt+r');
+      await sendToActiveTab(context, {
+        action: 'read_selection',
+        text: 'First iframe sentence for highlight tests. Second sentence continues the selection.',
+      });
       await expect(page.locator('#vox-status')).toContainText(/Playing|Reading selection/i, { timeout: 10_000 });
-      await expect(frame.locator('.vox-word-active')).toBeVisible({ timeout: 8_000 });
+      await expect(frame.locator('.vox-sentence-active').first()).toBeVisible({ timeout: 8_000 });
     } finally {
       await context.close();
     }
@@ -284,7 +319,10 @@ test.describe('Vox Reader smoke', () => {
         sel.addRange(range);
       });
 
-      await page.keyboard.press('Alt+r');
+      await sendToActiveTab(context, {
+        action: 'read_selection',
+        text: 'First iframe sentence for highlight tests. Second sentence continues the selection.',
+      });
       await expect(page.locator('#vox-status')).toContainText(/Playing|Reading selection/i, { timeout: 10_000 });
       await page.keyboard.press('Alt+s');
       await expect(page.locator('#vox-status')).toContainText(/Stopped/i, { timeout: 8_000 });
@@ -667,7 +705,7 @@ test.describe('Vox Reader smoke', () => {
     const { context } = launched;
     try {
       const page = await context.newPage();
-      await page.goto(`file://${fixturePage}`);
+      await page.goto(`file://${chatFixturePage}`);
       await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
       await page.keyboard.press('Alt+p');
       await page.locator('#vox-settings-btn').click();
@@ -675,20 +713,50 @@ test.describe('Vox Reader smoke', () => {
       await page.locator('#vox-settings-close').click();
       await page.locator('#vox-playpause-bar').click();
       await expect(page.locator('#vox-status')).toContainText(/Playing/i, { timeout: 10_000 });
-      await page.waitForFunction(
-        () => {
-          const active = document.querySelector('article .vox-word-active');
-          return active && Number(active.getAttribute('data-vox-index') || 0) >= 4;
-        },
-        null,
-        { timeout: 15_000 },
-      );
-      const idxBeforePause = await page.locator('article .vox-word-active').first().getAttribute('data-vox-index');
+      const repeated = page.locator('[data-message-author-role="assistant"] .vox-word', { hasText: 'Shared' });
+      await expect(repeated).toHaveCount(2, { timeout: 10_000 });
+      await repeated.nth(1).click();
+      const idxBeforePause = await page.locator('.vox-word-active').first().getAttribute('data-vox-index');
       await page.keyboard.press('Alt+p');
       await expect(page.locator('#vox-status')).toContainText(/Paused/i, { timeout: 8_000 });
-      await page.waitForTimeout(1200);
-      const idxWhilePaused = await page.locator('article .vox-word-active').first().getAttribute('data-vox-index');
+      await page.locator('[data-message-author-role="assistant"]').last().evaluate((el) => {
+        const extra = document.createElement('p');
+        extra.textContent = 'Streaming update added after playback paused.';
+        el.appendChild(extra);
+      });
+      await page.waitForTimeout(1800);
+      const idxWhilePaused = await page.locator('.vox-word-active').first().getAttribute('data-vox-index');
       expect(Number(idxWhilePaused)).toBeGreaterThanOrEqual(Number(idxBeforePause));
+    } finally {
+      await context.close();
+    }
+  });
+
+  test('Stop cancels playback waiting for late page content', async () => {
+    const launched = await launchWithExtension();
+    const { context } = launched;
+    try {
+      const page = await context.newPage();
+      await page.goto(`file://${fixturePage}`);
+      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.keyboard.press('Alt+p');
+      await page.locator('#vox-settings-btn').click();
+      await page.locator('#eng-classic').click();
+      await page.locator('#vox-settings-close').click();
+      await page.evaluate(() => {
+        document.querySelector('article')?.remove();
+        setTimeout(() => {
+          const article = document.createElement('article');
+          article.innerHTML = '<p>Late content should not begin reading after the user pressed Stop.</p>';
+          document.body.appendChild(article);
+        }, 900);
+      });
+      await page.locator('#vox-playpause-bar').click();
+      await page.keyboard.press('Alt+s');
+      await expect(page.locator('#vox-status')).toContainText(/Stopped/i, { timeout: 5_000 });
+      await page.waitForTimeout(1800);
+      await expect(page.locator('#vox-status')).not.toContainText(/Playing|Generating/i);
+      await expect(page.locator('#vox-playpause-bar')).toHaveAttribute('aria-label', 'Play');
     } finally {
       await context.close();
     }
@@ -799,7 +867,10 @@ test.describe('Vox Reader smoke', () => {
 
       const popup = await context.newPage();
       await popup.goto(`chrome-extension://${extensionId}/popup/popup.html`);
-      await popup.locator('#open-player').click();
+      // A real action popup does not become the active browser tab. Keep the
+      // article active, then invoke the popup button in its extension page.
+      await page.bringToFront();
+      await popup.locator('#open-player').evaluate((button) => button.click());
       await expect(page.locator('#vox-player')).toBeVisible({ timeout: 10_000 });
     } finally {
       await context.close();

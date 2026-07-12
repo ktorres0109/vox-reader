@@ -8,8 +8,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const lamePath = path.join(root, 'vendor/lame.min.js');
 
 if (!fs.existsSync(lamePath)) {
-  console.warn('mp3.test.mjs: skipped — vendor/lame.min.js missing (run npm run fetch-deps)');
-  process.exit(0);
+  throw new Error('mp3.test.mjs: vendor/lame.min.js missing — run npm run fetch-deps');
 }
 
 const script = fs.readFileSync(lamePath, 'utf8');

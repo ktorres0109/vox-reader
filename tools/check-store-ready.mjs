@@ -45,6 +45,12 @@ const privacyMd = fs.readFileSync(path.join(root, 'PRIVACY.md'), 'utf8');
 const versionPattern = new RegExp(`v${manifest.version.replace(/\./g, '\\.')}`);
 assert.match(privacyHtml, versionPattern, 'docs/privacy.html should reference current extension version');
 assert.match(privacyMd, versionPattern, 'PRIVACY.md should reference current extension version');
+for (const section of ['What we collect', 'Third parties', 'Children', 'Changes', 'Contact']) {
+  assert.ok(
+    privacyHtml.includes(section) && privacyMd.includes(section),
+    `privacy policies should both include the "${section}" section`,
+  );
+}
 
 const vendorFiles = [
   'vendor/kokoro.web.js',
@@ -53,8 +59,10 @@ const vendorFiles = [
   'vendor/ort-wasm-simd-threaded.jsep.wasm',
 ];
 const missingVendor = vendorFiles.filter((f) => !fs.existsSync(path.join(root, f)));
-if (missingVendor.length) {
-  console.warn(`check-store-ready: vendor missing (${missingVendor.join(', ')}) — run npm run fetch-deps before pack:store`);
-}
+assert.deepEqual(
+  missingVendor,
+  [],
+  `vendor missing (${missingVendor.join(', ')}) — run npm run fetch-deps before checking store readiness`,
+);
 
 console.log(`check-store-ready.mjs: ok (v${manifest.version})`);

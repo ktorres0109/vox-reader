@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
+import '../shared/core.js';
 
-import { filterChatRoots, normalizeChatReadScope } from './chat-read-scope.mjs';
+const { filterChatRoots, normalizeChatReadScope } = globalThis.VoxCore;
 
 const roots = ['a', 'b', 'c'];
 

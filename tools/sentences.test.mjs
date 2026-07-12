@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
-import { buildSentences, getSentencesFrom } from './sentences.mjs';
+import '../shared/core.js';
+
+const { buildSentences, getSentencesFrom } = globalThis.VoxCore;
 
 const words = ['Hello', 'world.', 'This', 'is', 'a', 'test.'];
 const sentences = buildSentences(words);

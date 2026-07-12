@@ -2,7 +2,7 @@
 
 importScripts('download.js');
 
-const CONTENT_FILES = ['content/content.js', 'content/tts_sync.js'];
+const CONTENT_FILES = ['shared/core.js', 'content/content.js', 'content/tts_sync.js'];
 const CONTENT_CSS = ['content/content.css'];
 
 chrome.runtime.onInstalled.addListener((details) => {
@@ -50,7 +50,8 @@ async function getTabSelection(tabId) {
       target: { tabId, allFrames: true },
       func: () => (window.getSelection()?.toString() || '').trim(),
     });
-    return (results || []).map((r) => r.result).filter(Boolean).join('\n').trim();
+    const selected = (results || []).filter((result) => result.result);
+    return (selected.find((result) => result.frameId === 0) || selected[0])?.result || '';
   } catch (_) {
     return '';
   }
@@ -84,24 +85,58 @@ chrome.commands.onCommand.addListener(async (command) => {
 let offscreenCreating = false;
 // Cached in-memory; persisted to storage.session so it survives SW restarts
 let kokoroActiveTabId = null;
+let kokoroActivePlaybackId = null;
+let kokoroActiveTabLoaded = false;
+let kokoroActiveTabChain = Promise.resolve();
+let kokoroActionChain = Promise.resolve();
 
 async function getKokoroActiveTab() {
-  if (kokoroActiveTabId) return kokoroActiveTabId;
+  if (kokoroActiveTabLoaded) return kokoroActiveTabId;
   try {
-    const r = await chrome.storage.session.get('kokoroActiveTabId');
+    const r = await chrome.storage.session.get(['kokoroActiveTabId', 'kokoroActivePlaybackId']);
     kokoroActiveTabId = r.kokoroActiveTabId || null;
+    kokoroActivePlaybackId = r.kokoroActivePlaybackId ?? null;
   } catch (_) {}
+  kokoroActiveTabLoaded = true;
   return kokoroActiveTabId;
 }
 
-function setKokoroActiveTab(tabId) {
+async function setKokoroActiveTab(tabId, playbackId) {
   kokoroActiveTabId = tabId;
-  chrome.storage.session.set({ kokoroActiveTabId: tabId }).catch(() => {});
+  kokoroActivePlaybackId = playbackId ?? null;
+  kokoroActiveTabLoaded = true;
+  await chrome.storage.session.set({
+    kokoroActiveTabId: tabId,
+    kokoroActivePlaybackId: kokoroActivePlaybackId,
+  }).catch(() => {});
 }
 
-function clearKokoroActiveTab() {
+async function clearKokoroActiveTab(expectedTabId = null, expectedPlaybackId = null) {
+  if (expectedTabId != null && kokoroActiveTabId !== expectedTabId) return false;
+  if (expectedPlaybackId != null && kokoroActivePlaybackId !== expectedPlaybackId) return false;
   kokoroActiveTabId = null;
-  chrome.storage.session.remove('kokoroActiveTabId').catch(() => {});
+  kokoroActivePlaybackId = null;
+  kokoroActiveTabLoaded = true;
+  await chrome.storage.session.remove([
+    'kokoroActiveTabId',
+    'kokoroActivePlaybackId',
+  ]).catch(() => {});
+  return true;
+}
+
+function withKokoroActiveTab(fn) {
+  const run = kokoroActiveTabChain.then(async () => {
+    await getKokoroActiveTab();
+    return fn();
+  });
+  kokoroActiveTabChain = run.catch(() => {});
+  return run;
+}
+
+function enqueueKokoroAction(fn) {
+  const run = kokoroActionChain.then(fn);
+  kokoroActionChain = run.catch(() => {});
+  return run;
 }
 
 async function ensureOffscreen() {
@@ -191,27 +226,22 @@ async function routeKokoroAction(msg, tabId) {
   }
 
   if (msg.action === 'kokoro_export') {
-    const activeTab = await getKokoroActiveTab();
-    if (activeTab) {
-      if (activeTab !== tabId) interruptKokoroTab(activeTab);
-      clearKokoroActiveTab();
-    }
+    await withKokoroActiveTab(async () => {
+      const activeTab = kokoroActiveTabId;
+      if (activeTab && activeTab !== tabId) interruptKokoroTab(activeTab);
+      await clearKokoroActiveTab(activeTab);
+    });
     await sendToOffscreen({ action: 'kokoro_stop', tabId });
     sendToOffscreen({ ...msg, tabId });
     return;
   }
 
   if (msg.action === 'kokoro_speak' && tabId) {
-    const activeTab = await getKokoroActiveTab();
-    if (activeTab && activeTab !== tabId) {
-      interruptKokoroTab(activeTab);
-    }
-    setKokoroActiveTab(tabId);
-  }
-
-  if (msg.action === 'kokoro_stop' && tabId) {
-    const activeTab = await getKokoroActiveTab();
-    if (activeTab === tabId) clearKokoroActiveTab();
+    await withKokoroActiveTab(async () => {
+      const activeTab = kokoroActiveTabId;
+      if (activeTab && activeTab !== tabId) interruptKokoroTab(activeTab);
+      await setKokoroActiveTab(tabId, msg.playbackId);
+    });
   }
 
   sendToOffscreen({ ...msg, tabId });
@@ -222,25 +252,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === 'kokoro_load' || msg.action === 'kokoro_speak' || msg.action === 'kokoro_stop' || msg.action === 'kokoro_pause' || msg.action === 'kokoro_resume' || msg.action === 'kokoro_warm_voice' || msg.action === 'kokoro_export' || msg.action === 'kokoro_export_cancel' || msg.action === 'kokoro_load_cancel') {
     const tabId = sender.tab?.id;
     if (msg.action === 'kokoro_stop' || msg.action === 'kokoro_pause' || msg.action === 'kokoro_resume' || msg.action === 'kokoro_load_cancel') {
-      if (msg.action === 'kokoro_stop' && tabId) {
-        getKokoroActiveTab().then((activeTab) => {
-          if (activeTab === tabId) clearKokoroActiveTab();
-        });
-      }
-      chrome.offscreen.hasDocument()
-        .then(ex => { if (ex) sendToOffscreen({ ...msg, tabId }); })
-        .catch(() => {});
+      enqueueKokoroAction(async () => {
+        if (msg.action === 'kokoro_stop' && tabId) {
+          await withKokoroActiveTab(() => clearKokoroActiveTab(tabId, msg.playbackId));
+        }
+        const exists = await chrome.offscreen.hasDocument().catch(() => false);
+        if (exists) await sendToOffscreen({ ...msg, tabId });
+      });
       return;
     }
     if (msg.action === 'kokoro_export_cancel') {
-      sendToOffscreen({ ...msg, tabId });
+      enqueueKokoroAction(() => sendToOffscreen({ ...msg, tabId }));
       return;
     }
     if (msg.action === 'kokoro_load' || msg.action === 'kokoro_speak' || msg.action === 'kokoro_export') {
-      routeKokoroAction(msg, tabId);
+      enqueueKokoroAction(() => routeKokoroAction(msg, tabId));
       return;
     }
-    sendToOffscreen({ ...msg, tabId });
+    enqueueKokoroAction(() => sendToOffscreen({ ...msg, tabId }));
     return;
   }
 
@@ -254,9 +283,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     msg.action === 'kokoro_export_error'
   ) {
     if (msg.action === 'kokoro_end' && msg.tabId) {
-      getKokoroActiveTab().then((activeTab) => {
-        if (activeTab === msg.tabId) clearKokoroActiveTab();
-      });
+      withKokoroActiveTab(() => clearKokoroActiveTab(msg.tabId, msg.playbackId));
     }
     if (msg.tabId) chrome.tabs.sendMessage(msg.tabId, msg).catch(() => {});
     return;
