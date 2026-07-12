@@ -15,6 +15,7 @@ const outZip = path.join(distDir, 'vox-reader.zip');
 const required = [
   'manifest.json',
   'background/service_worker.js',
+  'shared/core.js',
   'content/content.js',
   'popup/popup.html',
   'offscreen/offscreen.js',

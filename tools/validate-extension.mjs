@@ -16,6 +16,7 @@ assert.ok(manifest.icons?.['128'], 'manifest icons required');
 const required = [
   'background/service_worker.js',
   'background/download.js',
+  'shared/core.js',
   'content/content.js',
   'content/content.css',
   'content/tts_sync.js',

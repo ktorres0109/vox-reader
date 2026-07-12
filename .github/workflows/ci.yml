@@ -44,7 +44,10 @@ jobs:
         run: echo "CHROME_PATH=${{ steps.setup-chrome.outputs.chrome-path }}" >> $GITHUB_ENV
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
+
+      - name: Fetch vendor bundles
+        run: npm run fetch-deps
 
       - name: Install Playwright Chromium
         run: npx playwright install chromium --with-deps

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
+import '../shared/core.js';
 
-import { normalizeMp3Bitrate, resolveExportRange } from './export-range.mjs';
+const { normalizeMp3Bitrate, resolveExportRange } = globalThis.VoxCore;
 
 assert.deepEqual(resolveExportRange({ scope: 'all', wordCount: 100 }), { start: 0, end: 99 });
 assert.deepEqual(

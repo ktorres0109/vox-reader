@@ -1,13 +1,23 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { loadServiceWorker } from './service-worker-harness.mjs';
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const sw = fs.readFileSync(path.join(root, 'background/service_worker.js'), 'utf8');
+const { listeners, sent, createdMenus } = loadServiceWorker();
 
-assert.match(sw, /vox-read-selection/);
-assert.match(sw, /contextMenus\.create/);
-assert.match(sw, /read_selection/);
+listeners.installed({ reason: 'update' });
+assert.deepEqual(JSON.parse(JSON.stringify(createdMenus)), [{
+  id: 'vox-read-selection',
+  title: 'Read selection with Vox Reader',
+  contexts: ['selection'],
+}]);
+
+listeners.contextClicked(
+  { menuItemId: 'vox-read-selection', selectionText: '  chosen words  ' },
+  { id: 9 },
+);
+await new Promise((resolve) => setTimeout(resolve, 0));
+assert.deepEqual(JSON.parse(JSON.stringify(sent)), [{
+  tabId: 9,
+  message: { action: 'read_selection', text: 'chosen words' },
+}]);
 
 console.log('context-menu.test.mjs: ok');
