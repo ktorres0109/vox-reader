@@ -64,6 +64,10 @@ const excludes = [
   'package.json',
   'playwright.config.js',
   '.github/*',
+  '.cursor/*',
+  '.agents/*',
+  '.DS_Store',
+  '*/.DS_Store',
   '*.md',
   '.gitignore',
 ];

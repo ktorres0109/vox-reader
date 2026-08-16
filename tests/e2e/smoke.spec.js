@@ -1,6 +1,7 @@
 import { test, expect, chromium } from '@playwright/test';
 import path from 'node:path';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { unpackedExtensionId } from '../../tools/extension-id.mjs';
@@ -9,6 +10,36 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '.
 const extensionPath = root;
 const fixturePage = path.join(root, 'tests/fixtures/article.html');
 const chatFixturePage = path.join(root, 'tests/fixtures/chat.html');
+let fixtureServer;
+let fixtureBaseUrl;
+
+const articleUrl = () => `${fixtureBaseUrl}/article.html`;
+const chatUrl = () => `${fixtureBaseUrl}/chat.html`;
+
+test.beforeAll(async () => {
+  const fixtures = new Map([
+    ['/article.html', fixturePage],
+    ['/chat.html', chatFixturePage],
+  ]);
+  fixtureServer = http.createServer((req, res) => {
+    const file = fixtures.get(new URL(req.url, 'http://localhost').pathname);
+    if (!file) {
+      res.writeHead(404).end();
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    res.end(fs.readFileSync(file));
+  });
+  await new Promise((resolve, reject) => {
+    fixtureServer.once('error', reject);
+    fixtureServer.listen(0, '127.0.0.1', resolve);
+  });
+  fixtureBaseUrl = `http://127.0.0.1:${fixtureServer.address().port}`;
+});
+
+test.afterAll(async () => {
+  if (fixtureServer) await new Promise((resolve) => fixtureServer.close(resolve));
+});
 
 async function waitForExtensionServiceWorker(context, timeoutMs = 30_000) {
   const deadline = Date.now() + timeoutMs;
@@ -24,16 +55,18 @@ async function waitForExtensionServiceWorker(context, timeoutMs = 30_000) {
 async function launchWithExtension() {
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vox-reader-pw-'));
   const launchOptions = {
-    channel: 'chrome',
     headless: false,
     ignoreDefaultArgs: ['--disable-extensions'],
     args: [
+      '--allow-file-access-from-files',
       `--disable-extensions-except=${extensionPath}`,
       `--load-extension=${extensionPath}`,
     ],
   };
   if (process.env.CHROME_PATH) {
     launchOptions.executablePath = process.env.CHROME_PATH;
+  } else {
+    launchOptions.channel = 'chrome';
   }
 
   const context = await chromium.launchPersistentContext(userDataDir, launchOptions);
@@ -42,9 +75,9 @@ async function launchWithExtension() {
   const extensionId = serviceWorker?.url().split('/')[2] ?? unpackedExtensionId(extensionPath);
 
   const probe = await context.newPage();
-  await probe.goto(`file://${fixturePage}`);
+  await probe.goto(articleUrl());
   const contentReady = await probe.waitForFunction(
-    () => window.__voxReaderLoaded === true,
+    () => document.documentElement.dataset.voxReaderLoaded === 'true',
     null,
     { timeout: 15_000 },
   ).then(() => true).catch(() => false);
@@ -81,8 +114,8 @@ test.describe('Vox Reader smoke', () => {
     const { context } = launched;
     try {
       const page = await context.newPage();
-      await page.goto(`file://${fixturePage}`);
-      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.goto(articleUrl());
+      await page.waitForFunction(() => document.documentElement.dataset.voxReaderLoaded === 'true', null, { timeout: 15_000 });
       await expect(page.locator('article h1')).toHaveText('Smoke test article');
     } finally {
       await context.close();
@@ -95,8 +128,8 @@ test.describe('Vox Reader smoke', () => {
     const { context } = launched;
     try {
       const page = await context.newPage();
-      await page.goto(`file://${fixturePage}`);
-      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.goto(articleUrl());
+      await page.waitForFunction(() => document.documentElement.dataset.voxReaderLoaded === 'true', null, { timeout: 15_000 });
       await page.keyboard.press('Alt+p');
       await expect(page.locator('#vox-player')).toBeVisible({ timeout: 10_000 });
       await expect(page.locator('#vox-playpause-bar')).toBeVisible();
@@ -111,35 +144,8 @@ test.describe('Vox Reader smoke', () => {
     const { context } = launched;
     try {
       const page = await context.newPage();
-      await page.goto(`file://${fixturePage}`);
-      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
-
-      const frame = page.frameLocator('#same-origin-frame');
-      await frame.locator('p').evaluate((el) => {
-        const range = document.createRange();
-        range.selectNodeContents(el);
-        const sel = window.getSelection();
-        sel.removeAllRanges();
-        sel.addRange(range);
-      });
-
-      await page.keyboard.press('Alt+r');
-      await expect(page.locator('#vox-player')).toBeVisible({ timeout: 10_000 });
-      await expect(page.locator('#vox-status')).toContainText(/Reading selection/i, { timeout: 10_000 });
-      await expect(frame.locator('.vox-word')).not.toHaveCount(0);
-    } finally {
-      await context.close();
-    }
-  });
-
-  test('iframe word highlights during classic playback', async () => {
-    const launched = await launchWithExtension();
-    if (!launched) test.skip(true, 'Chrome extension host unavailable');
-    const { context } = launched;
-    try {
-      const page = await context.newPage();
-      await page.goto(`file://${fixturePage}`);
-      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.goto(articleUrl());
+      await page.waitForFunction(() => document.documentElement.dataset.voxReaderLoaded === 'true', null, { timeout: 15_000 });
       await page.keyboard.press('Alt+p');
       await expect(page.locator('#vox-player')).toBeVisible({ timeout: 10_000 });
       await page.locator('#vox-settings-btn').click();
@@ -152,7 +158,44 @@ test.describe('Vox Reader smoke', () => {
         const sel = window.getSelection();
         sel.removeAllRanges();
         sel.addRange(range);
+        document.dispatchEvent(new Event('selectionchange', { bubbles: true }));
       });
+      await page.waitForTimeout(50);
+      await page.locator('body').focus();
+
+      await page.keyboard.press('Alt+r');
+      await expect(page.locator('#vox-player')).toBeVisible({ timeout: 10_000 });
+      await expect(page.locator('#vox-status')).toContainText(/Playing|Done/i, { timeout: 10_000 });
+      await expect(frame.locator('.vox-word')).not.toHaveCount(0);
+    } finally {
+      await context.close();
+    }
+  });
+
+  test('iframe word highlights during classic playback', async () => {
+    const launched = await launchWithExtension();
+    if (!launched) test.skip(true, 'Chrome extension host unavailable');
+    const { context } = launched;
+    try {
+      const page = await context.newPage();
+      await page.goto(articleUrl());
+      await page.waitForFunction(() => document.documentElement.dataset.voxReaderLoaded === 'true', null, { timeout: 15_000 });
+      await page.keyboard.press('Alt+p');
+      await expect(page.locator('#vox-player')).toBeVisible({ timeout: 10_000 });
+      await page.locator('#vox-settings-btn').click();
+      await page.locator('#eng-classic').click();
+
+      const frame = page.frameLocator('#same-origin-frame');
+      await frame.locator('p').evaluate((el) => {
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        document.dispatchEvent(new Event('selectionchange', { bubbles: true }));
+      });
+      await page.waitForTimeout(50);
+      await page.locator('body').focus();
 
       await page.keyboard.press('Alt+r');
       await expect(page.locator('#vox-status')).toContainText(/Playing|Reading selection/i, { timeout: 10_000 });
@@ -168,8 +211,8 @@ test.describe('Vox Reader smoke', () => {
     const { context } = launched;
     try {
       const page = await context.newPage();
-      await page.goto(`file://${fixturePage}`);
-      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.goto(articleUrl());
+      await page.waitForFunction(() => document.documentElement.dataset.voxReaderLoaded === 'true', null, { timeout: 15_000 });
       await page.keyboard.press('Alt+p');
       await page.locator('#vox-settings-btn').click();
       await page.locator('#exp-mp3').click();
@@ -189,8 +232,8 @@ test.describe('Vox Reader smoke', () => {
     const { context } = launched;
     try {
       const page = await context.newPage();
-      await page.goto(`file://${fixturePage}`);
-      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.goto(articleUrl());
+      await page.waitForFunction(() => document.documentElement.dataset.voxReaderLoaded === 'true', null, { timeout: 15_000 });
       await page.keyboard.press('Alt+p');
       await expect(page.locator('#vox-kokoro-install')).toBeVisible({ timeout: 15_000 });
       await expect(page.locator('#vox-install-cancel')).toBeVisible({ timeout: 10_000 });
@@ -208,8 +251,8 @@ test.describe('Vox Reader smoke', () => {
     const { context } = launched;
     try {
       const page = await context.newPage();
-      await page.goto(`file://${fixturePage}`);
-      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.goto(articleUrl());
+      await page.waitForFunction(() => document.documentElement.dataset.voxReaderLoaded === 'true', null, { timeout: 15_000 });
       await page.keyboard.press('Alt+e');
       await expect(page.locator('#vox-player')).toBeVisible({ timeout: 10_000 });
       await expect(page.locator('#exp-mp3')).toHaveText('Cancel', { timeout: 10_000 });
@@ -239,8 +282,8 @@ test.describe('Vox Reader smoke', () => {
     const { context } = launched;
     try {
       const page = await context.newPage();
-      await page.goto(`file://${fixturePage}`);
-      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.goto(articleUrl());
+      await page.waitForFunction(() => document.documentElement.dataset.voxReaderLoaded === 'true', null, { timeout: 15_000 });
       await page.keyboard.press('Alt+p');
       await expect(page.locator('#vox-player')).toBeVisible({ timeout: 10_000 });
       await page.locator('#vox-settings-btn').click();
@@ -253,7 +296,10 @@ test.describe('Vox Reader smoke', () => {
         const sel = window.getSelection();
         sel.removeAllRanges();
         sel.addRange(range);
+        document.dispatchEvent(new Event('selectionchange', { bubbles: true }));
       });
+      await page.waitForTimeout(50);
+      await page.locator('body').focus();
 
       await page.keyboard.press('Alt+r');
       await expect(page.locator('#vox-status')).toContainText(/Playing|Reading selection/i, { timeout: 10_000 });
@@ -269,8 +315,8 @@ test.describe('Vox Reader smoke', () => {
     const { context } = launched;
     try {
       const page = await context.newPage();
-      await page.goto(`file://${fixturePage}`);
-      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.goto(articleUrl());
+      await page.waitForFunction(() => document.documentElement.dataset.voxReaderLoaded === 'true', null, { timeout: 15_000 });
       await page.keyboard.press('Alt+p');
       await page.locator('#vox-settings-btn').click();
       await page.locator('#eng-classic').click();
@@ -282,7 +328,10 @@ test.describe('Vox Reader smoke', () => {
         const sel = window.getSelection();
         sel.removeAllRanges();
         sel.addRange(range);
+        document.dispatchEvent(new Event('selectionchange', { bubbles: true }));
       });
+      await page.waitForTimeout(50);
+      await page.locator('body').focus();
 
       await page.keyboard.press('Alt+r');
       await expect(page.locator('#vox-status')).toContainText(/Playing|Reading selection/i, { timeout: 10_000 });
@@ -300,8 +349,8 @@ test.describe('Vox Reader smoke', () => {
     const { context } = launched;
     try {
       const page = await context.newPage();
-      await page.goto(`file://${fixturePage}`);
-      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.goto(articleUrl());
+      await page.waitForFunction(() => document.documentElement.dataset.voxReaderLoaded === 'true', null, { timeout: 15_000 });
       await page.keyboard.press('Alt+p');
       await expect(page.locator('#vox-player')).toBeVisible({ timeout: 10_000 });
       await page.locator('#vox-settings-btn').click();
@@ -319,8 +368,8 @@ test.describe('Vox Reader smoke', () => {
     const { context } = launched;
     try {
       const page = await context.newPage();
-      await page.goto(`file://${fixturePage}`);
-      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.goto(articleUrl());
+      await page.waitForFunction(() => document.documentElement.dataset.voxReaderLoaded === 'true', null, { timeout: 15_000 });
       await page.keyboard.press('Alt+p');
       await page.locator('#vox-settings-btn').click();
       await page.selectOption('#export-scope', 'selection');
@@ -337,8 +386,8 @@ test.describe('Vox Reader smoke', () => {
     const { context } = launched;
     try {
       const page = await context.newPage();
-      await page.goto(`file://${chatFixturePage}`);
-      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.goto(chatUrl());
+      await page.waitForFunction(() => document.documentElement.dataset.voxReaderLoaded === 'true', null, { timeout: 15_000 });
       await page.keyboard.press('Alt+p');
       await page.locator('#vox-settings-btn').click();
       await page.locator('#eng-classic').click();
@@ -365,8 +414,8 @@ test.describe('Vox Reader smoke', () => {
     const { context } = launched;
     try {
       const page = await context.newPage();
-      await page.goto(`file://${chatFixturePage}`);
-      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.goto(chatUrl());
+      await page.waitForFunction(() => document.documentElement.dataset.voxReaderLoaded === 'true', null, { timeout: 15_000 });
       await page.keyboard.press('Alt+p');
       await page.locator('#vox-settings-btn').click();
       await page.locator('#eng-classic').click();
@@ -395,8 +444,8 @@ test.describe('Vox Reader smoke', () => {
     const { context } = launched;
     try {
       const page = await context.newPage();
-      await page.goto(`file://${fixturePage}`);
-      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.goto(articleUrl());
+      await page.waitForFunction(() => document.documentElement.dataset.voxReaderLoaded === 'true', null, { timeout: 15_000 });
       await page.keyboard.press('Alt+e');
       await expect(page.locator('#exp-mp3')).toHaveText('Cancel', { timeout: 10_000 });
       await page.keyboard.press('Alt+s');
@@ -413,8 +462,8 @@ test.describe('Vox Reader smoke', () => {
     const { context } = launched;
     try {
       const page = await context.newPage();
-      await page.goto(`file://${fixturePage}`);
-      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.goto(articleUrl());
+      await page.waitForFunction(() => document.documentElement.dataset.voxReaderLoaded === 'true', null, { timeout: 15_000 });
       await page.keyboard.press('Alt+p');
       await page.locator('#vox-immersive-btn').click();
       await expect(page.locator('#vox-immersive')).toBeVisible({ timeout: 8_000 });
@@ -432,8 +481,8 @@ test.describe('Vox Reader smoke', () => {
     const { context } = launched;
     try {
       const page = await context.newPage();
-      await page.goto(`file://${chatFixturePage}`);
-      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.goto(chatUrl());
+      await page.waitForFunction(() => document.documentElement.dataset.voxReaderLoaded === 'true', null, { timeout: 15_000 });
       await page.keyboard.press('Alt+p');
       await page.locator('#vox-settings-btn').click();
       await page.locator('#eng-classic').click();
@@ -459,8 +508,8 @@ test.describe('Vox Reader smoke', () => {
     const { context } = launched;
     try {
       const page = await context.newPage();
-      await page.goto(`file://${fixturePage}`);
-      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.goto(articleUrl());
+      await page.waitForFunction(() => document.documentElement.dataset.voxReaderLoaded === 'true', null, { timeout: 15_000 });
       await page.keyboard.press('Alt+p');
       await page.locator('#vox-settings-btn').click();
       await page.locator('#eng-classic').click();
@@ -482,8 +531,8 @@ test.describe('Vox Reader smoke', () => {
     const { context } = launched;
     try {
       const page = await context.newPage();
-      await page.goto(`file://${fixturePage}`);
-      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.goto(articleUrl());
+      await page.waitForFunction(() => document.documentElement.dataset.voxReaderLoaded === 'true', null, { timeout: 15_000 });
       await page.keyboard.press('Alt+p');
       await page.locator('#vox-settings-btn').click();
       await page.locator('#eng-classic').click();
@@ -509,8 +558,8 @@ test.describe('Vox Reader smoke', () => {
     const { context } = launched;
     try {
       const page = await context.newPage();
-      await page.goto(`file://${fixturePage}`);
-      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.goto(articleUrl());
+      await page.waitForFunction(() => document.documentElement.dataset.voxReaderLoaded === 'true', null, { timeout: 15_000 });
       await page.keyboard.press('Alt+p');
       await page.locator('#vox-settings-btn').click();
       await page.locator('#eng-classic').click();
@@ -541,8 +590,8 @@ test.describe('Vox Reader smoke', () => {
     const { context } = launched;
     try {
       const page = await context.newPage();
-      await page.goto(`file://${fixturePage}`);
-      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.goto(articleUrl());
+      await page.waitForFunction(() => document.documentElement.dataset.voxReaderLoaded === 'true', null, { timeout: 15_000 });
       await page.keyboard.press('Alt+p');
       await page.locator('#vox-settings-btn').click();
       await page.locator('#eng-classic').click();
@@ -566,8 +615,8 @@ test.describe('Vox Reader smoke', () => {
     const { context } = launched;
     try {
       const page = await context.newPage();
-      await page.goto(`file://${fixturePage}`);
-      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.goto(articleUrl());
+      await page.waitForFunction(() => document.documentElement.dataset.voxReaderLoaded === 'true', null, { timeout: 15_000 });
       await page.keyboard.press('Alt+p');
       await page.locator('#vox-settings-btn').click();
       await page.locator('#eng-classic').click();
@@ -591,8 +640,8 @@ test.describe('Vox Reader smoke', () => {
     const { context } = launched;
     try {
       const page = await context.newPage();
-      await page.goto(`file://${fixturePage}`);
-      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.goto(articleUrl());
+      await page.waitForFunction(() => document.documentElement.dataset.voxReaderLoaded === 'true', null, { timeout: 15_000 });
       await page.keyboard.press('Alt+p');
       const pill = page.locator('#vox-speed-pill');
       const before = await pill.textContent();
@@ -609,8 +658,8 @@ test.describe('Vox Reader smoke', () => {
     const { context } = launched;
     try {
       const page = await context.newPage();
-      await page.goto(`file://${fixturePage}`);
-      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.goto(articleUrl());
+      await page.waitForFunction(() => document.documentElement.dataset.voxReaderLoaded === 'true', null, { timeout: 15_000 });
       await page.keyboard.press('Alt+p');
       await page.locator('#vox-settings-btn').click();
       await page.locator('#eng-classic').click();
@@ -641,8 +690,8 @@ test.describe('Vox Reader smoke', () => {
     const { context } = launched;
     try {
       const page = await context.newPage();
-      await page.goto(`file://${fixturePage}`);
-      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.goto(articleUrl());
+      await page.waitForFunction(() => document.documentElement.dataset.voxReaderLoaded === 'true', null, { timeout: 15_000 });
       await page.keyboard.press('Alt+p');
       await page.locator('#vox-settings-btn').click();
       await page.locator('#eng-classic').click();
@@ -667,8 +716,8 @@ test.describe('Vox Reader smoke', () => {
     const { context } = launched;
     try {
       const page = await context.newPage();
-      await page.goto(`file://${fixturePage}`);
-      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.goto(articleUrl());
+      await page.waitForFunction(() => document.documentElement.dataset.voxReaderLoaded === 'true', null, { timeout: 15_000 });
       await page.keyboard.press('Alt+p');
       await page.locator('#vox-settings-btn').click();
       await page.locator('#eng-classic').click();
@@ -700,8 +749,8 @@ test.describe('Vox Reader smoke', () => {
     const { context } = launched;
     try {
       const page = await context.newPage();
-      await page.goto(`file://${fixturePage}`);
-      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.goto(articleUrl());
+      await page.waitForFunction(() => document.documentElement.dataset.voxReaderLoaded === 'true', null, { timeout: 15_000 });
       await page.keyboard.press('Alt+p');
       await page.locator('#vox-settings-btn').click();
       await page.locator('#eng-classic').click();
@@ -733,8 +782,8 @@ test.describe('Vox Reader smoke', () => {
     const { context } = launched;
     try {
       const page = await context.newPage();
-      await page.goto(`file://${fixturePage}`);
-      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.goto(articleUrl());
+      await page.waitForFunction(() => document.documentElement.dataset.voxReaderLoaded === 'true', null, { timeout: 15_000 });
       await page.keyboard.press('Alt+p');
       await page.locator('#vox-settings-btn').click();
       await page.selectOption('#export-format', 'wav');
@@ -752,8 +801,8 @@ test.describe('Vox Reader smoke', () => {
     const { context } = launched;
     try {
       const page = await context.newPage();
-      await page.goto(`file://${fixturePage}`);
-      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.goto(articleUrl());
+      await page.waitForFunction(() => document.documentElement.dataset.voxReaderLoaded === 'true', null, { timeout: 15_000 });
       await page.keyboard.press('Alt+p');
       await page.locator('#vox-settings-btn').click();
       await page.locator('#sc-export').fill('x');
@@ -773,8 +822,8 @@ test.describe('Vox Reader smoke', () => {
     const { context } = launched;
     try {
       const page = await context.newPage();
-      await page.goto(`file://${fixturePage}`);
-      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.goto(articleUrl());
+      await page.waitForFunction(() => document.documentElement.dataset.voxReaderLoaded === 'true', null, { timeout: 15_000 });
       await page.keyboard.press('Alt+p');
       await page.locator('#vox-settings-btn').click();
       await page.locator('#eng-classic').click();
@@ -794,8 +843,8 @@ test.describe('Vox Reader smoke', () => {
     const { context, extensionId } = launched;
     try {
       const page = await context.newPage();
-      await page.goto(`file://${fixturePage}`);
-      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.goto(articleUrl());
+      await page.waitForFunction(() => document.documentElement.dataset.voxReaderLoaded === 'true', null, { timeout: 15_000 });
 
       const popup = await context.newPage();
       await popup.goto(`chrome-extension://${extensionId}/popup/popup.html`);
@@ -812,8 +861,8 @@ test.describe('Vox Reader smoke', () => {
     const { context } = launched;
     try {
       const page = await context.newPage();
-      await page.goto(`file://${fixturePage}`);
-      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.goto(articleUrl());
+      await page.waitForFunction(() => document.documentElement.dataset.voxReaderLoaded === 'true', null, { timeout: 15_000 });
       await page.keyboard.press('Alt+p');
       await expect(page.locator('#vox-player')).toBeVisible({ timeout: 10_000 });
       await page.locator('#vox-close-bar').click();
@@ -829,8 +878,8 @@ test.describe('Vox Reader smoke', () => {
     const { context } = launched;
     try {
       const page = await context.newPage();
-      await page.goto(`file://${fixturePage}`);
-      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.goto(articleUrl());
+      await page.waitForFunction(() => document.documentElement.dataset.voxReaderLoaded === 'true', null, { timeout: 15_000 });
       await page.keyboard.press('Alt+p');
       await page.locator('#vox-settings-btn').click();
       await page.locator('#hl-ul').click();
@@ -849,8 +898,8 @@ test.describe('Vox Reader smoke', () => {
     const { context } = launched;
     try {
       const page = await context.newPage();
-      await page.goto(`file://${fixturePage}`);
-      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.goto(articleUrl());
+      await page.waitForFunction(() => document.documentElement.dataset.voxReaderLoaded === 'true', null, { timeout: 15_000 });
       await page.keyboard.press('Alt+p');
       await page.locator('#vox-settings-btn').click();
       await page.selectOption('#export-format', 'mp3');
@@ -867,8 +916,8 @@ test.describe('Vox Reader smoke', () => {
     const { context } = launched;
     try {
       const page = await context.newPage();
-      await page.goto(`file://${chatFixturePage}`);
-      await page.waitForFunction(() => window.__voxReaderLoaded === true, null, { timeout: 15_000 });
+      await page.goto(chatUrl());
+      await page.waitForFunction(() => document.documentElement.dataset.voxReaderLoaded === 'true', null, { timeout: 15_000 });
       await page.keyboard.press('Alt+p');
       await page.locator('#vox-settings-btn').click();
       await expect(page.locator('#vox-chat-read-section')).toBeVisible();

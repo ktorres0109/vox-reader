@@ -248,6 +248,9 @@
 
   if (window.__voxReaderLoaded) return;
   window.__voxReaderLoaded = true;
+  // Content scripts run in an isolated world, so expose a DOM-only readiness
+  // marker for diagnostics and browser smoke tests.
+  document.documentElement.dataset.voxReaderLoaded = 'true';
 
   // chrome.runtime.sendMessage throws synchronously when extension context is invalidated
   // (e.g. after extension reload). Wrapping in try-catch prevents uncaught errors and
@@ -320,7 +323,6 @@
     playAfterExport: false,
     pendingPlayAfterKokoro: false,
     pendingPlayStartIdx: 0,
-    kreaderSync: false,
     chatDomDirty: false,          // chat DOM changed since last wrap
     chatReadScope: 'all',         // all | latest | single (chat sites)
     chatReadIndex: 0,
@@ -358,7 +360,7 @@
     chrome.storage.sync.get([
       'speed','voiceName','shortcuts','highlightWord','highlightSentence',
       'sentenceStyle','wordColor','sentenceHex',
-      'voiceEngine','kokoroVoice','kreaderSync','exportFormat','exportScope','exportBitrate',
+      'voiceEngine','kokoroVoice','exportFormat','exportScope','exportBitrate',
       'chatReadScope','chatReadIndex',
     ], (p) => {
       if (p.speed != null) S.speed = p.speed;
@@ -372,7 +374,6 @@
       if (p.voiceEngine) S.voiceEngine = p.voiceEngine;
       const knownVoice = KOKORO_VOICES.some(v => v.id === p.kokoroVoice);
       S.kokoroVoice = knownVoice ? p.kokoroVoice : DEFAULT_KOKORO_VOICE;
-      if (p.kreaderSync != null) S.kreaderSync = !!p.kreaderSync;
       if (p.exportFormat === 'wav' || p.exportFormat === 'mp3') S.exportFormat = p.exportFormat;
       if (p.exportScope === 'all' || p.exportScope === 'selection' || p.exportScope === 'here') {
         S.exportScope = p.exportScope;
@@ -393,7 +394,6 @@
         sentenceHex: S.sentenceHex,
         voiceEngine: S.voiceEngine,
         kokoroVoice: S.kokoroVoice,
-        kreaderSync: S.kreaderSync,
         exportFormat: S.exportFormat,
         exportScope: S.exportScope,
         exportBitrate: S.exportBitrate,
@@ -417,12 +417,6 @@
       kokoroCacheVersion: chrome.runtime.getManifest().version,
     });
   }
-  function setKreaderSync(enabled) {
-    S.kreaderSync = !!enabled;
-    savePrefs();
-    window.dispatchEvent(new CustomEvent('vox-kreader-sync', { detail: { enabled: S.kreaderSync } }));
-  }
-
   function invalidateKokoroCache() {
     S.kokoroModelCached = false;
     chrome.storage.local.remove(['kokoroModelCached', 'kokoroCacheVersion']);
@@ -2190,15 +2184,6 @@
             </div>
           </div>
 
-          <!-- KReader sync (optional, off by default) -->
-          <div class="vs">
-            <div class="vs-hl-toggle-pair">
-              <span>KReader sync</span>
-              <button class="vs-toggle ${S.kreaderSync?'on':''}" id="tog-kreader" role="switch" aria-checked="${S.kreaderSync}" aria-label="KReader highlight sync"></button>
-            </div>
-            <p class="vs-kokoro-info">Sync highlights with local KReader app on 127.0.0.1:8766</p>
-          </div>
-
           <!-- Export + status on same row -->
           <div class="vs vs-bottom-row">
             <button class="vs-export-btn" id="exp-pdf" title="Print this page">Print</button>
@@ -2252,7 +2237,6 @@
     syncEngineUI();
     syncPrintUI();
     syncChatReadUI();
-    window.dispatchEvent(new CustomEvent('vox-kreader-sync', { detail: { enabled: S.kreaderSync } }));
     if (S.voiceEngine === 'kokoro' && !S.kokoroModelCached) {
       startKokoroDownload();
     } else {
@@ -2395,14 +2379,6 @@
       e.target.setAttribute('aria-checked', String(S.highlightSentence));
       savePrefs();
     };
-    document.getElementById('tog-kreader').onclick = (e) => {
-      const next = !S.kreaderSync;
-      e.target.classList.toggle('on', next);
-      e.target.setAttribute('aria-checked', String(next));
-      setKreaderSync(next);
-      setStatus(next ? 'KReader sync on' : 'KReader sync off');
-    };
-
     document.getElementById('hl-bg').onclick = () => {
       S.sentenceStyle = 'bg';
       document.getElementById('hl-bg').classList.add('active');

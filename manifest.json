@@ -71,14 +71,14 @@
         "<all_urls>"
       ],
       "js": [
-        "content/content.js",
-        "content/tts_sync.js"
+        "content/content.js"
       ],
       "css": [
         "content/content.css"
       ],
       "run_at": "document_idle",
-      "all_frames": true
+      "all_frames": true,
+      "match_about_blank": true
     }
   ]
 }

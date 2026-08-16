@@ -18,7 +18,6 @@ const required = [
   'background/download.js',
   'content/content.js',
   'content/content.css',
-  'content/tts_sync.js',
   'offscreen/offscreen.js',
   'offscreen/offscreen.html',
   'offscreen/wav.js',

@@ -20,15 +20,16 @@ if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
 
 const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vox-store-cap-'));
 const launchOptions = {
-  channel: 'chrome',
   headless: false,
   ignoreDefaultArgs: ['--disable-extensions'],
   args: [
+    '--allow-file-access-from-files',
     `--disable-extensions-except=${root}`,
     `--load-extension=${root}`,
   ],
 };
 if (process.env.CHROME_PATH) launchOptions.executablePath = process.env.CHROME_PATH;
+else launchOptions.channel = 'chrome';
 
 const context = await chromium.launchPersistentContext(userDataDir, launchOptions);
 const extensionId = unpackedExtensionId(root);

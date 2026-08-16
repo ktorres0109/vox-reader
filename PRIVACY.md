@@ -24,10 +24,6 @@ Vox Reader may connect to the network only when you:
 
 No page content is sent to Vox Reader servers — there are no Vox Reader servers for reading or TTS.
 
-## Optional KReader sync
-
-If you enable **KReader sync** in Settings, the extension polls `http://127.0.0.1:8766` on your machine to mirror highlights from the local KReader macOS app. This traffic never leaves your computer and is **off by default**.
-
 ## Permissions
 
 | Permission | Why |

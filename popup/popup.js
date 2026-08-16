@@ -1,4 +1,4 @@
-const CONTENT_FILES = ['content/content.js', 'content/tts_sync.js'];
+const CONTENT_FILES = ['content/content.js'];
 const CONTENT_CSS = ['content/content.css'];
 
 const PRIVACY_URL = 'https://ktorres0109.github.io/vox-reader/privacy.html';

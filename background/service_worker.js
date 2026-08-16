@@ -2,7 +2,7 @@
 
 importScripts('download.js');
 
-const CONTENT_FILES = ['content/content.js', 'content/tts_sync.js'];
+const CONTENT_FILES = ['content/content.js'];
 const CONTENT_CSS = ['content/content.css'];
 
 chrome.runtime.onInstalled.addListener((details) => {
