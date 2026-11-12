@@ -1,28 +1,42 @@
 // Vox Reader — Kokoro 82M neural TTS (offscreen document)
 // Uses kokoro-js for multi-voice synthesis (Bella, Sarah, etc.)
+//
+// Playback is gapless: each sentence is synthesized ahead of time and scheduled
+// on the AudioContext clock with AudioBufferSourceNode.start(when), back to back.
+// Pause suspends the AudioContext (the clock freezes, scheduled audio waits);
+// resume re-sends the timing of every scheduled chunk so highlights re-sync.
 
 import { KokoroTTS } from '../vendor/kokoro.web.js';
 import { encodeWav, bytesToBase64 } from './wav.js';
 import { encodeMp3 } from './mp3.js';
+import { createMediaSession } from './media-session.js';
 
 const MODEL_ID = 'onnx-community/Kokoro-82M-v1.0-ONNX';
+const LOOKAHEAD = 2;          // sentences synthesized ahead of the one playing
+const SCHEDULE_LEAD_SEC = 0.06;
 
 let tts = null;
 let audioCtx = null;
-let currentSource = null;
-let isPlaying = false;
-let generation = 0;
+let outputNode = null;
 let exportGeneration = 0;
 let exportInProgress = false;
 let loadGeneration = 0;
 let modelLoadingPromise = null;
 let currentVoice = 'af_bella';
 
-/** @type {{ sentences: object[], tabId: number, gen: number, speed: number, voice: string, sentenceIndex: number, offsetSec: number, paused: boolean, chunkStartedAt?: number, chunkDuration?: number } | null} */
-let loopState = null;
-let loopEpoch = 0; // increments on every runSentenceLoop start so superseded loops exit
+/** Active read: one per offscreen document. */
+let session = null;
+let sessionCounter = 0;
 const synthCache = new Map();
 const loadWaiters = new Set(); // tabIds waiting for a kokoro_load to finish
+let synthChain = Promise.resolve(); // tts.generate calls are serialized
+const synthStats = []; // recent synthesis timings (diagnostics)
+
+const media = createMediaSession({
+  onAction: (key) => {
+    if (session) send({ action: 'kokoro_media', key, tabId: session.tabId });
+  },
+});
 
 function send(msg) {
   chrome.runtime.sendMessage(msg).catch(() => {});
@@ -49,7 +63,7 @@ async function warmVoice(voice, tabId) {
     reportProgress(tabId, { progress: 99, status: 'Initializing AI voice…' });
   }
   try {
-    await tts.generate('Ready.', { voice: v, speed: 1 });
+    await queueSynth(() => tts.generate('Ready.', { voice: v, speed: 1 }));
   } catch (_) { /* voice file fetch may fail offline — speak will retry */ }
 }
 
@@ -93,18 +107,15 @@ async function loadModel(tabId, voice) {
 function getAudioCtx() {
   if (!audioCtx || audioCtx.state === 'closed') {
     audioCtx = new AudioContext();
-  }
-  if (audioCtx.state === 'suspended') {
-    audioCtx.resume().catch(() => {});
+    outputNode = media.connect(audioCtx);
   }
   return audioCtx;
 }
 
-function stopCurrentAudio() {
-  if (currentSource) {
-    try { currentSource.stop(); } catch (_) {}
-    currentSource = null;
-  }
+function queueSynth(fn) {
+  const run = synthChain.then(fn);
+  synthChain = run.catch(() => {});
+  return run;
 }
 
 function cacheKey(text, speed, voice) {
@@ -117,8 +128,16 @@ async function synthesizeToBuffer(text, speed = 1.0, voice) {
   const key = cacheKey(text, rate, v);
   if (synthCache.has(key)) return synthCache.get(key);
 
-  const audio = await tts.generate(text, { voice: v, speed: rate });
-  const samples = audio.data;
+  const audio = await queueSynth(async () => {
+    const t0 = performance.now();
+    const out = await tts.generate(text, { voice: v, speed: rate });
+    synthStats.push({ ms: Math.round(performance.now() - t0), chars: text.length });
+    if (synthStats.length > 20) synthStats.shift();
+    return out;
+  });
+  // kokoro-js returns a transformers.js RawAudio: samples live in .audio (not .data).
+  const samples = audio.audio || audio.data;
+  if (!samples || !samples.length) throw new Error('Kokoro returned no audio');
   const sr = audio.sampling_rate || 24000;
   const ctx = getAudioCtx();
   const buf = ctx.createBuffer(1, samples.length, sr);
@@ -132,155 +151,193 @@ async function synthesizeToBuffer(text, speed = 1.0, voice) {
   return entry;
 }
 
-function playBuffer(entry, offsetSec = 0) {
-  stopCurrentAudio();
-  const ctx = getAudioCtx();
-  const src = ctx.createBufferSource();
-  src.buffer = entry.buf;
-  src.connect(ctx.destination);
-  currentSource = src;
-  const safeOffset = Math.max(0, Math.min(offsetSec, Math.max(0, entry.duration - 0.01)));
-  const startedAt = Date.now();
-  const duration = Math.max(0, entry.duration - safeOffset);
-  src.start(0, safeOffset);
-  return { startedAt, duration, offsetSec: safeOffset };
-}
+// ── Gapless session ─────────────────────────────────────────────────────────
 
-function waitForPlayback(durationSec) {
-  return new Promise((resolve, reject) => {
-    if (!currentSource) {
-      resolve();
-      return;
+/** Wall-clock ms (Date.now() scale) at which AudioContext time `when` is heard. */
+function wallClockAt(ctx, when) {
+  try {
+    const ts = ctx.getOutputTimestamp?.();
+    if (ts && ts.contextTime > 0 && ts.performanceTime > 0) {
+      return performance.timeOrigin + ts.performanceTime + (when - ts.contextTime) * 1000;
     }
-    currentSource.onended = resolve;
-    currentSource.onerror = reject;
-    setTimeout(resolve, (durationSec + 1) * 1000);
-  });
+  } catch (_) {}
+  return Date.now() + (when - ctx.currentTime) * 1000;
 }
 
-function clearLoopState() {
-  loopState = null;
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
-async function runSentenceLoop(sentences, tabId, gen, speed = 1.0, voice, startIndex = 0, startOffset = 0) {
-  if (voice) currentVoice = voice;
-  const epoch = ++loopEpoch;
-  loopState = {
-    sentences,
-    tabId,
-    gen,
-    speed: speed || 1.0,
-    voice: voice || currentVoice,
-    sentenceIndex: startIndex,
-    offsetSec: startOffset,
-    paused: false,
+function isLive(sess) {
+  return session === sess && !sess.stopped;
+}
+
+function entryFor(sess, i) {
+  if (!sess.pending.has(i)) {
+    const s = sess.sentences[i];
+    sess.pending.set(i, synthesizeToBuffer(s.text, sess.speed, sess.voice));
+  }
+  return sess.pending.get(i);
+}
+
+function prefetch(sess, from) {
+  for (let i = from; i < Math.min(sess.sentences.length, from + LOOKAHEAD); i++) {
+    entryFor(sess, i).catch(() => {});
+  }
+}
+
+function chunkMessage(sess, item) {
+  return {
+    action: 'kokoro_chunk',
+    tabId: sess.tabId,
+    session: sess.clientSession,
+    index: item.index,
+    startWordIdx: sess.sentences[item.index].startWordIdx,
+    startedAt: wallClockAt(audioCtx, item.when),
+    duration: item.duration,
   };
-  isPlaying = true;
+}
 
-  const superseded = () => generation !== gen || epoch !== loopEpoch;
+/** Number of scheduled chunks that have not finished playing. */
+function pendingAudio(sess) {
+  const now = audioCtx.currentTime;
+  sess.scheduled = sess.scheduled.filter((x) => x.when + x.duration > now - 0.05);
+  return sess.scheduled.length;
+}
 
+async function runSession(sess) {
   if (!tts) {
     try {
-      await loadModel(tabId, currentVoice);
+      await loadModel(sess.tabId, sess.voice);
     } catch (err) {
-      if (!superseded()) {
-        send({ action: 'kokoro_error', error: err.message, tabId });
-        isPlaying = false;
-        clearLoopState();
+      if (isLive(sess)) {
+        send({ action: 'kokoro_error', error: err.message, tabId: sess.tabId });
+        endSession(sess);
       }
       return;
     }
-    if (!isPlaying || superseded() || !loopState) return;
+    if (!isLive(sess)) return;
   }
 
+  const ctx = getAudioCtx();
+  if (ctx.state === 'suspended' && !sess.paused) await ctx.resume().catch(() => {});
+  let nextWhen = 0;
   let playedAny = false;
-  for (let i = startIndex; i < sentences.length; i++) {
-    if (superseded() || !loopState) return;
-    if (!isPlaying) break;
-    // Paused before this sentence started — keep loopState for resume
-    if (loopState.paused) return;
 
-    loopState.sentenceIndex = i;
-    const sentence = sentences[i];
-    const offset = i === startIndex ? startOffset : 0;
-    loopState.offsetSec = offset;
-    loopState.chunkStartedAt = null;
-
+  for (let i = 0; i < sess.sentences.length; i++) {
+    if (!isLive(sess)) return;
+    prefetch(sess, i);
+    let entry;
     try {
-      const entry = await synthesizeToBuffer(sentence.text, speed, currentVoice);
-      if (superseded() || !loopState) return;
-      // Paused while this sentence was synthesizing — resume replays it (cache hit)
-      if (loopState.paused) return;
-      if (!isPlaying) break;
-
-      const played = playBuffer(entry, offset);
-      loopState.chunkStartedAt = played.startedAt;
-      loopState.chunkDuration = played.duration + offset;
-      playedAny = true;
-
-      send({
-        action: 'kokoro_chunk',
-        startWordIdx: sentence.startWordIdx,
-        startedAt: played.startedAt,
-        duration: played.duration,
-        tabId,
-      });
-
-      await waitForPlayback(played.duration);
-      if (superseded() || !loopState) return;
-      // Paused mid-chunk — pausePlayback already saved offsetSec; keep it
-      if (loopState.paused) return;
-      loopState.offsetSec = 0;
-      loopState.chunkStartedAt = null;
+      entry = await entryFor(sess, i);
     } catch (err) {
-      if (superseded() || !isPlaying) break;
-      send({ action: 'kokoro_error', error: err.message, tabId });
-      isPlaying = false;
-      clearLoopState();
+      if (!isLive(sess)) return;
+      send({ action: 'kokoro_error', error: err.message, tabId: sess.tabId });
+      endSession(sess);
       return;
     }
-  }
-
-  if (superseded()) return;
-
-  if (isPlaying && loopState && !loopState.paused) {
-    if (playedAny) {
-      send({ action: 'kokoro_end', tabId });
-    } else {
-      send({
-        action: 'kokoro_error',
-        error: 'Nothing to read — reload the page or switch to Classic voice',
-        tabId,
-      });
+    sess.pending.delete(i);
+    if (!isLive(sess)) return;
+    // Backpressure: keep at most one chunk queued behind the one playing.
+    while (pendingAudio(sess) >= 2) {
+      await sleep(80);
+      if (!isLive(sess)) return;
     }
+    // Startup: a short first chunk (e.g. a heading) would finish before the next
+    // sentence is synthesized, leaving a gap. Give the next one a head start.
+    if (i === 0 && entry.duration < 2.5 && sess.sentences.length > 1) {
+      await Promise.race([entryFor(sess, 1).catch(() => {}), sleep(1500)]);
+      if (!isLive(sess)) return;
+    }
+    const when = Math.max(nextWhen, ctx.currentTime + SCHEDULE_LEAD_SEC);
+    const src = ctx.createBufferSource();
+    src.buffer = entry.buf;
+    src.connect(outputNode || ctx.destination);
+    src.start(when);
+    const item = { index: i, src, when, duration: entry.duration };
+    sess.scheduled.push(item);
+    nextWhen = when + entry.duration;
+    playedAny = true;
+    // Sent ahead of time: the content script applies it at `startedAt`.
+    if (!sess.paused) send(chunkMessage(sess, item));
   }
-  if (!(loopState && loopState.paused)) {
-    isPlaying = false;
-    currentSource = null;
-    clearLoopState();
+
+  // Let the tail play out (the clock does not advance while paused).
+  while (isLive(sess) && audioCtx.currentTime < nextWhen) await sleep(100);
+  if (!isLive(sess)) return;
+  if (playedAny) {
+    send({ action: 'kokoro_end', tabId: sess.tabId, session: sess.clientSession });
+  } else {
+    send({ action: 'kokoro_error', error: 'Nothing to read — reload the page or switch to Classic voice', tabId: sess.tabId });
   }
+  endSession(sess);
+}
+
+function stopSources(sess) {
+  for (const item of sess.scheduled) {
+    try { item.src.stop(); } catch (_) {}
+    try { item.src.disconnect(); } catch (_) {}
+  }
+  sess.scheduled = [];
+}
+
+function endSession(sess) {
+  if (!sess) return;
+  sess.stopped = true;
+  stopSources(sess);
+  if (session === sess) {
+    session = null;
+    media.setState('none');
+  }
+}
+
+function stopPlayback() {
+  if (session) endSession(session);
+  // A paused session leaves the context suspended; wake it for the next read.
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+}
+
+function startSession(msg) {
+  stopPlayback();
+  if (msg.voice) currentVoice = msg.voice;
+  const sess = {
+    id: ++sessionCounter,
+    clientSession: msg.session,
+    tabId: msg.tabId,
+    sentences: msg.sentences || [],
+    speed: msg.speed || 1.0,
+    voice: msg.voice || currentVoice,
+    scheduled: [],
+    pending: new Map(),
+    paused: false,
+    stopped: false,
+  };
+  session = sess;
+  media.setMetadata({ title: msg.title || 'Vox Reader', artist: 'Vox Reader', album: msg.site || '' });
+  media.setState('playing');
+  runSession(sess);
 }
 
 function pausePlayback() {
-  if (!loopState || !isPlaying) return;
-  // Only add elapsed time when a chunk is actually playing; while a sentence is
-  // still synthesizing there is no audio yet, so the saved offset stays as-is.
-  if (currentSource && loopState.chunkStartedAt) {
-    const elapsed = (Date.now() - loopState.chunkStartedAt) / 1000;
-    const base = loopState.offsetSec || 0;
-    loopState.offsetSec = Math.min(base + elapsed, loopState.chunkDuration || base + elapsed);
-  }
-  loopState.paused = true;
-  isPlaying = false;
-  stopCurrentAudio();
+  if (!session || session.paused) return;
+  session.paused = true;
+  media.setState('paused');
+  if (audioCtx) audioCtx.suspend().catch(() => {});
 }
 
-function resumePlayback() {
-  if (!loopState || !loopState.paused) return;
-  loopState.paused = false;
-  const { sentences, tabId, gen, speed, voice, sentenceIndex, offsetSec } = loopState;
-  isPlaying = true;
-  runSentenceLoop(sentences, tabId, gen, speed, voice, sentenceIndex, offsetSec);
+async function resumePlayback(tabId) {
+  const sess = session;
+  if (!sess || !sess.paused) {
+    // Offscreen doc may have been recycled during a long pause — let the tab restart.
+    if (!sess) send({ action: 'kokoro_resume_failed', tabId });
+    return;
+  }
+  if (audioCtx) await audioCtx.resume().catch(() => {});
+  if (!isLive(sess)) return;
+  sess.paused = false;
+  media.setState('playing');
+  pendingAudio(sess);
+  for (const item of sess.scheduled) send(chunkMessage(sess, item));
 }
 
 async function exportAudio(sentences, tabId, speed, voice, exportGen, filename, format = 'wav', mp3Bitrate = 128) {
@@ -352,10 +409,13 @@ chrome.runtime.onMessage.addListener((msg) => {
 
   if (msg.action === 'kokoro_load') {
     const tabId = msg.tabId;
-    const loadGen = loadGeneration;
     if (msg.voice) currentVoice = msg.voice;
     if (tabId) loadWaiters.add(tabId);
-    loadModel(tabId, msg.voice)
+    const loading = loadModel(tabId, msg.voice);
+    // loadModel bumps loadGeneration synchronously when it starts a download, so
+    // read it afterwards; a later bump means this load was cancelled.
+    const loadGen = loadGeneration;
+    loading
       .then(() => {
         if (tabId) loadWaiters.delete(tabId);
         if (loadGen !== loadGeneration && !tts) return;
@@ -403,14 +463,7 @@ chrome.runtime.onMessage.addListener((msg) => {
       send({ action: 'kokoro_error', error: 'Export in progress — try again shortly', tabId: msg.tabId });
       return;
     }
-    if (msg.voice) currentVoice = msg.voice;
-    isPlaying = false;
-    stopCurrentAudio();
-    clearLoopState();
-    const thisGen = ++generation;
-    setTimeout(() => {
-      runSentenceLoop(msg.sentences, msg.tabId, thisGen, msg.speed || 1.0, msg.voice);
-    }, 30);
+    startSession(msg);
     return;
   }
 
@@ -420,15 +473,12 @@ chrome.runtime.onMessage.addListener((msg) => {
   }
 
   if (msg.action === 'kokoro_resume') {
-    resumePlayback();
+    resumePlayback(msg.tabId);
     return;
   }
 
   if (msg.action === 'kokoro_stop') {
-    isPlaying = false;
-    generation++;
-    stopCurrentAudio();
-    clearLoopState();
+    stopPlayback();
     return;
   }
 
@@ -438,14 +488,49 @@ chrome.runtime.onMessage.addListener((msg) => {
   }
 
   if (msg.action === 'kokoro_export') {
-    isPlaying = false;
-    generation++;
-    stopCurrentAudio();
-    clearLoopState();
+    stopPlayback();
     const exportGen = ++exportGeneration;
     if (msg.voice) currentVoice = msg.voice;
     exportAudio(msg.sentences, msg.tabId, msg.speed || 1.0, msg.voice, exportGen, msg.filename, msg.format || 'wav', msg.mp3Bitrate || 128)
       .catch((err) => send({ action: 'kokoro_export_error', error: err.message, tabId: msg.tabId }));
     return;
+  }
+
+  if (msg.action === 'kokoro_debug_caches') {
+    // Diagnostics: where transformers.js / kokoro-js cached the model (this origin's Cache API).
+    (async () => {
+      const out = { origin: location.origin, caches: {} };
+      for (const name of await caches.keys()) {
+        const cache = await caches.open(name);
+        const entries = [];
+        for (const req of await cache.keys()) {
+          const res = await cache.match(req);
+          const len = Number(res?.headers.get('content-length')) || (await res.clone().arrayBuffer()).byteLength;
+          entries.push({ url: req.url, bytes: len });
+        }
+        out.caches[name] = entries;
+      }
+      if (navigator.storage?.estimate) out.estimate = await navigator.storage.estimate();
+      send({ action: 'kokoro_debug_caches_result', result: out });
+    })().catch((err) => send({ action: 'kokoro_debug_caches_result', error: String(err) }));
+    return;
+  }
+
+  if (msg.action === 'kokoro_debug_state') {
+    // Test hook: report scheduling state (used by the Brave harness).
+    const s = session;
+    send({
+      action: 'kokoro_debug_state_result',
+      tabId: msg.tabId,
+      state: {
+        ctxState: audioCtx?.state || 'none',
+        ctxTime: audioCtx?.currentTime || 0,
+        session: s ? { paused: s.paused, scheduled: s.scheduled.map((x) => ({ i: x.index, when: x.when, d: x.duration })) } : null,
+        media: media.describe(),
+        crossOriginIsolated: self.crossOriginIsolated === true,
+        threads: navigator.hardwareConcurrency,
+        synth: synthStats.slice(-8),
+      },
+    });
   }
 });
