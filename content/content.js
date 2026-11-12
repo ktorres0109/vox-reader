@@ -262,7 +262,7 @@
   // Stop TTS on any navigation — refresh, back/forward, or SPA route change
   function stopTTS() {
     if (S.voiceEngine === 'kokoro') {
-      sendMsg({ action: 'kokoro_stop' });
+      sendMsg({ action: 'kokoro_stop', session: S.kokoroSession });
     } else {
       window.speechSynthesis.cancel();
     }
@@ -276,7 +276,7 @@
   }
 
   window.addEventListener('beforeunload', () => stopTTS());
-  window.addEventListener('pagehide',     () => stopTTS());
+  window.addEventListener('pagehide',     () => { savePosition(true); stopTTS(); });
 
   // SPA navigation — wrap pushState/replaceState to stop reading on route change
   try {
@@ -328,9 +328,34 @@
     chatReadIndex: 0,
     iframeReadActive: false,
     speakEndIdx: null,            // when set, stop reading at this word index
-    lastKokoroChunk: null,        // { sent, highlightStart, duration, startedAt } for ticker resume
+    speakStartIdx: null,          // first word of a bounded read (selection)
+    charPrefix: null,             // spoken-char prefix sums for time-left
+    measuredCps: 0,               // Kokoro chars/sec at 1.0x, learned from chunks
+    lastKokoroChunk: null,        // last applied kokoro_chunk message, for ticker resume
+    kokoroSession: 0,             // id echoed by the offscreen doc; stale chunks are ignored
+    chunkTimers: [],              // pending applications of chunks scheduled in the future
+    pausedAt: 0,
     _voxDomUpdate: false,         // true while wrap/unwrap mutates the page
+    // ── Player / reader appearance ──
+    highlightMode: 'word',        // word | sentence | off (derived from the two flags)
+    theme: 'dark',                // dark | sepia | light
+    readerFont: 'serif',          // serif | sans (immersive reader)
+    readerSize: 19,
+    readerWidth: 'medium',        // narrow | medium | wide
+    readerLine: '1.8',
+    readTitle: '',                // title for media session (external reads)
+    trackPosition: false,         // save per-page position for this read
+    kokoroDevice: 'auto',         // auto (WebGPU, else CPU) | wasm (CPU only)
+    kokoroBackend: '',            // backend the offscreen doc actually loaded
+    followPaused: false,          // user scrolled away; don't auto-scroll until "Back to reading"
   };
+
+  // Player elements live in the player's shadow root; everything else (immersive
+  // reader) in the page. $() looks in the shadow root first.
+  function $(id) {
+    const shadow = S.playerEl?.shadowRoot;
+    return (shadow && shadow.getElementById(id)) || document.getElementById(id);
+  }
 
   let frameSelection = { text: '', at: 0 };
   const FRAME_SEL_TTL_MS = 5000;
@@ -355,13 +380,26 @@
     { id: 'bm_lewis',   label: 'Lewis (British Male)' },
   ];
 
+  // Highlight mode is stored as the two legacy flags (word implies sentence fill too).
+  function highlightModeOf(st) {
+    if (st.highlightWord) return 'word';
+    if (st.highlightSentence) return 'sentence';
+    return 'off';
+  }
+  function setHighlightMode(mode) {
+    S.highlightMode = mode;
+    S.highlightWord = mode === 'word';
+    S.highlightSentence = mode !== 'off';
+  }
+
   // ── Prefs ──────────────────────────────────────────────────────────────────
   function loadPrefs(cb) {
     chrome.storage.sync.get([
       'speed','voiceName','shortcuts','highlightWord','highlightSentence',
       'sentenceStyle','wordColor','sentenceHex',
       'voiceEngine','kokoroVoice','exportFormat','exportScope','exportBitrate',
-      'chatReadScope','chatReadIndex',
+      'chatReadScope','chatReadIndex','kokoroDevice',
+      'theme','readerFont','readerSize','readerWidth','readerLine',
     ], (p) => {
       if (p.speed != null) S.speed = p.speed;
       if (p.voiceName) S.selectedVoiceName = p.voiceName;
@@ -381,6 +419,13 @@
       if ([96, 128, 192].includes(p.exportBitrate)) S.exportBitrate = p.exportBitrate;
       S.chatReadScope = (p.chatReadScope === 'latest' || p.chatReadScope === 'single') ? p.chatReadScope : 'all';
       if (typeof p.chatReadIndex === 'number' && p.chatReadIndex >= 0) S.chatReadIndex = p.chatReadIndex;
+      if (['dark', 'sepia', 'light'].includes(p.theme)) S.theme = p.theme;
+      S.kokoroDevice = p.kokoroDevice === 'wasm' ? 'wasm' : 'auto';
+      if (p.readerFont === 'sans' || p.readerFont === 'serif') S.readerFont = p.readerFont;
+      if (typeof p.readerSize === 'number') S.readerSize = Math.min(30, Math.max(14, p.readerSize));
+      if (['narrow', 'medium', 'wide'].includes(p.readerWidth)) S.readerWidth = p.readerWidth;
+      if (['1.5', '1.8', '2.1'].includes(p.readerLine)) S.readerLine = p.readerLine;
+      S.highlightMode = highlightModeOf(S);
       cb();
     });
   }
@@ -399,6 +444,9 @@
         exportBitrate: S.exportBitrate,
         chatReadScope: S.chatReadScope,
         chatReadIndex: S.chatReadIndex,
+        kokoroDevice: S.kokoroDevice,
+        theme: S.theme, readerFont: S.readerFont, readerSize: S.readerSize,
+        readerWidth: S.readerWidth, readerLine: S.readerLine,
       });
     } catch(e) { /* extension reloaded mid-session, ignore */ }
   }
@@ -483,6 +531,39 @@
   }
 
   // ── DOM helpers ────────────────────────────────────────────────────────────
+  // Focus Reader (sibling extension) renders the article in an open shadow root.
+  // When it is open, Vox reads and highlights inside it instead of the page.
+  const FOCUS_READER_HOST = 'focus-reader-host';
+  function getFocusReaderShadow() {
+    const host = document.getElementById(FOCUS_READER_HOST);
+    return host && host.shadowRoot && host.shadowRoot.querySelector('article') ? host.shadowRoot : null;
+  }
+
+  /** Document plus any foreign shadow root Vox has wrapped words inside. */
+  function wordRoots() {
+    const roots = [document];
+    const fr = getFocusReaderShadow();
+    if (fr) roots.push(fr);
+    return roots;
+  }
+  function qsaAll(sel) {
+    const out = [];
+    for (const r of wordRoots()) r.querySelectorAll(sel).forEach((el) => out.push(el));
+    return out;
+  }
+
+  function ensureForeignHighlightStyle() {
+    const fr = getFocusReaderShadow();
+    if (!fr) return;
+    let st = fr.getElementById('vox-reader-hl-style');
+    if (!st) {
+      st = document.createElement('style');
+      st.id = 'vox-reader-hl-style';
+      fr.appendChild(st);
+    }
+    st.textContent = VoxPlayerUI.highlightCss(S.sentenceStyle);
+  }
+
   function applyColors() {
     document.documentElement.style.setProperty('--vox-word-color', S.wordColor);
     const h = S.sentenceHex;
@@ -492,6 +573,7 @@
     document.documentElement.style.setProperty('--vox-sentence-bg', S._sentenceRgba);
     document.documentElement.classList.toggle('vox-sentence-style-bg', S.sentenceStyle === 'bg');
     document.documentElement.classList.toggle('vox-sentence-style-underline', S.sentenceStyle === 'underline');
+    ensureForeignHighlightStyle();
   }
 
   // ── Skip / readable root ───────────────────────────────────────────────────
@@ -915,6 +997,9 @@
   }
 
   function getReadableRoots() {
+    const focus = getFocusReaderShadow();
+    if (focus) return [focus.querySelector('article')];
+
     const chatRoots = getChatRoots();
     if (chatRoots.length) return filterChatRootsForRead(chatRoots);
 
@@ -987,6 +1072,7 @@
         const text = node.textContent;
         if (!text.trim()) return;
         if (isMathLikeText(text)) return;
+        const footnote = isFootnoteMarker(node.parentElement);
         const frag = document.createDocumentFragment();
         const re = /(\S+|\s+)/g; let m;
         while ((m = re.exec(text)) !== null) {
@@ -995,7 +1081,7 @@
             span.className = 'vox-word';
             span.textContent = m[0];
             span.dataset.voxIndex = S.words.length;
-            S.words.push({ el: span, text: m[0] });
+            S.words.push({ el: span, text: m[0], footnote });
             frag.appendChild(span);
           } else {
             frag.appendChild(document.createTextNode(m[0]));
@@ -1003,8 +1089,11 @@
         }
         node.parentNode.replaceChild(frag, node);
       } else if (node.nodeType === Node.ELEMENT_NODE && !shouldSkipWalk(node)) {
+        const before = S.words.length;
         Array.from(node.childNodes).forEach(walk);
         if (node.shadowRoot) Array.from(node.shadowRoot.childNodes).forEach(walk);
+        // A heading / paragraph / list item ends a sentence even without punctuation.
+        if (SENTENCE_BLOCKS.has(node.tagName) && S.words.length > before) S.words[S.words.length - 1].blockEnd = true;
       }
     }
     roots.forEach(root => Array.from(root.childNodes).forEach(walk));
@@ -1059,6 +1148,7 @@
       if (before) frag.appendChild(document.createTextNode(before));
 
       if (middle.trim()) {
+        const footnote = isFootnoteMarker(node.parentElement);
         const midFrag = document.createDocumentFragment();
         const re = /(\S+|\s+)/g;
         let m;
@@ -1068,7 +1158,7 @@
             span.className = 'vox-word';
             span.textContent = m[0];
             span.dataset.voxIndex = S.words.length;
-            S.words.push({ el: span, text: m[0] });
+            S.words.push({ el: span, text: m[0], footnote });
             midFrag.appendChild(span);
           } else {
             midFrag.appendChild(document.createTextNode(m[0]));
@@ -1090,25 +1180,39 @@
     }
   }
 
+  const SENTENCE_BLOCKS = new Set(['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LI', 'BLOCKQUOTE', 'DT', 'DD', 'FIGCAPTION', 'TD', 'TH', 'PRE']);
+
+  // Footnote markers rendered as <sup> (Wikipedia refs, note links) are not spoken.
+  function isFootnoteMarker(el) {
+    const sup = el && el.closest ? el.closest('sup') : null;
+    if (!sup) return false;
+    const t = (sup.textContent || '').trim();
+    if (!/^\[?[\d,–\-a-z*†‡\s]{1,8}\]?$/i.test(t)) return false;
+    return /^\[.*\]$/.test(t)
+      || !!sup.querySelector('a[href*="#"]')
+      || /reference|footnote|cite|noteref|\bfn/i.test(`${sup.className} ${sup.id}`);
+  }
+
+  /** Spoken form per word ('' = silent; see content/lib/text-clean.js), then sentences. */
   function buildSentences() {
     S.sentences = [];
-    if (!S.words.length) return;
+    const spoken = window.VoxTextClean.cleanTokens(S.words);
+    S.words.forEach((w, i) => { w.spoken = spoken[i]; });
+    if (!S.words.length) { rebuildCharIndex(); return; }
     let start = 0;
     for (let i = 0; i < S.words.length; i++) {
-      if (/[.!?]["')\]]*$/.test(S.words[i].text) && S.words[i].text.length > 1) {
+      const t = S.words[i].spoken;
+      if ((/[.!?]["')\]\u201d\u2019]*$/.test(t) && t.length > 1) || S.words[i].blockEnd) {
         S.sentences.push({ start, end: i });
         start = i + 1;
       }
     }
     if (start < S.words.length) S.sentences.push({ start, end: S.words.length - 1 });
+    rebuildCharIndex();
   }
 
   function getSentenceIdx(wordIdx) {
-    for (let i = 0; i < S.sentences.length; i++) {
-      const s = S.sentences[i];
-      if (wordIdx >= s.start && wordIdx <= s.end) return i;
-    }
-    return -1;
+    return window.VoxPlayback.sentenceIndexAt(S.sentences, wordIdx);
   }
 
   function getSentenceWords(si) {
@@ -1141,7 +1245,7 @@
   function unwrap() {
     S._voxDomUpdate = true;
     clearIframeHighlights();
-    document.querySelectorAll('.vox-word').forEach(sp =>
+    qsaAll('.vox-word').forEach(sp =>
       sp.parentNode.replaceChild(document.createTextNode(sp.textContent), sp));
     S.words = []; S.sentences = []; clearHL();
     S._voxDomUpdate = false;
@@ -1149,7 +1253,7 @@
 
   // ── Highlighting ──────────────────────────────────────────────────────────
   function placeSentenceOverlays(si) {
-    document.querySelectorAll('.vox-sentence-active').forEach(e => e.classList.remove('vox-sentence-active'));
+    qsaAll('.vox-sentence-active').forEach(e => e.classList.remove('vox-sentence-active'));
     if (!S.highlightSentence || si < 0) return;
     const words = getSentenceWords(si);
     if (!words.length) return;
@@ -1171,7 +1275,7 @@
 
   function clearHL() {
     if (_activeWordEl) { _activeWordEl.classList.remove('vox-word-active'); _activeWordEl = null; }
-    document.querySelectorAll('.vox-sentence-active').forEach(e => e.classList.remove('vox-sentence-active'));
+    qsaAll('.vox-sentence-active').forEach(e => e.classList.remove('vox-sentence-active'));
     if (S.iframeReadActive) {
       broadcastToIframes({
         source: IFRAME_HL_MSG,
@@ -1199,15 +1303,16 @@
       return;
     }
     if (_activeWordEl) { _activeWordEl.classList.remove('vox-word-active'); _activeWordEl = null; }
-    if (S.highlightWord && S.words[idx]) {
+    if (S.highlightWord && S.words[idx]?.el) {
       _activeWordEl = S.words[idx].el;
       _activeWordEl.classList.add('vox-word-active');
     }
     const si = getSentenceIdx(idx);
     if (si !== S.currentSentence) {
       const firstWord = S.words[S.sentences[si]?.start];
-      if (firstWord) {
-        scrollWordIntoView(firstWord.el);
+      if (firstWord?.el) {
+        if (!S.followPaused) scrollWordIntoView(firstWord.el);
+        else scheduleBackPill();
         requestAnimationFrame(() => {
           requestAnimationFrame(() => placeSentenceOverlays(si));
         });
@@ -1233,10 +1338,11 @@
     }
     if (!S.voice && S.voices.length) { S.voice = S.voices[0]; S.selectedVoiceName = S.voice.name; }
     populateVoices();
+    syncVoicePill();
   }
 
   function populateVoices() {
-    const sel = document.getElementById('vox-voice-select');
+    const sel = $('vox-voice-select');
     if (!sel) return;
     sel.innerHTML = '';
     S.voices.forEach(v => {
@@ -1249,7 +1355,7 @@
   }
 
   // ── TTS timing ─────────────────────────────────────────────────────────────
-  const BASE_CPS = 13;        // estimated chars/sec at rate 1.0
+  const BASE_CPS = window.VoxPlayback.BASE_CPS; // estimated chars/sec at rate 1.0
   // Classic speech engine has ~250ms startup delay; Kokoro plays immediately (AudioContext)
   function STARTUP_MS() { return S.voiceEngine === 'kokoro' ? 20 : 250; }
 
@@ -1258,7 +1364,8 @@
     let offset = 0;
     return S.words.slice(startIdx, end).map((w, i) => {
       const ms = STARTUP_MS() + (offset / (BASE_CPS * S.speed)) * 1000;
-      offset += w.text.length + 1;
+      const len = spokenOf(w).length;
+      offset += len ? len + 1 : 0;
       return { wordIdx: startIdx + i, ms };
     });
   }
@@ -1294,7 +1401,7 @@
     if (!S.words.length) return;
 
     const endIdx = S.speakEndIdx != null ? S.speakEndIdx : S.words.length - 1;
-    const text = S.words.slice(idx, endIdx + 1).map(w => w.text).join(' ');
+    const text = S.words.slice(idx, endIdx + 1).map(spokenOf).filter(Boolean).join(' ');
     if (!text.trim()) { resetPlaybackState(); return; }
     const u = new SpeechSynthesisUtterance(text);
     u.rate = S.speed; u.lang = 'en-US';
@@ -1309,8 +1416,10 @@
       if (ev.name !== 'word') return;
       let cc = 0, wi = idx;
       for (let i = idx; i <= endIdx; i++) {
+        const len = spokenOf(S.words[i]).length;
+        if (!len) continue;
         if (cc >= ev.charIndex) { wi = i; break; }
-        cc += S.words[i].text.length + 1; wi = i + 1;
+        cc += len + 1; wi = i + 1;
       }
       const w = Math.min(wi, endIdx);
       if (w > S.currentWord) { S.currentWord = w; highlightAt(w); }
@@ -1318,9 +1427,10 @@
 
     u.onend = () => {
       stopTicker(); clearHL();
-      S.speaking = false; S.paused = false; S.speakEndIdx = null;
+      S.speaking = false; S.paused = false; S.speakEndIdx = null; S.speakStartIdx = null;
       document.documentElement.classList.remove('vox-reading');
       updatePlayBtn(); setStatus('Done'); S.currentWord = 0;
+      if (S.trackPosition) clearPosition();
       maybeRunPendingExport();
     };
     u.onerror = (e) => {
@@ -1354,7 +1464,7 @@
       const wordStart = si === startSi ? Math.max(start, startIdx) : start;
       const wordEnd = Math.min(end, cap);
       if (wordStart > wordEnd) continue;
-      const text = S.words.slice(wordStart, wordEnd + 1).map(w => w.text).join(' ');
+      const text = S.words.slice(wordStart, wordEnd + 1).map(spokenOf).filter(Boolean).join(' ');
       if (text.trim()) result.push({ text, startWordIdx: wordStart });
     }
     return result;
@@ -1367,29 +1477,59 @@
     const fromLocal = Math.max(0, highlightStart - sent.start);
     const words = S.words.slice(sent.start + fromLocal, sent.end + 1);
     if (!words.length) return [];
-    const totalChars = words.reduce((s, w) => s + w.text.length + 1, 0) || 1;
+    const lenOf = (w) => { const n = spokenOf(w).length; return n ? n + 1 : 0; };
+    const totalChars = words.reduce((sum, w) => sum + lenOf(w), 0) || 1;
     let charOffset = 0;
     return words.map((w, i) => {
       const ms = (charOffset / totalChars) * durationSec * 1000;
-      charOffset += w.text.length + 1;
+      charOffset += lenOf(w);
       return { wordIdx: highlightStart + i, ms };
     });
+  }
+
+  // The offscreen doc schedules sentences back to back on the audio clock and
+  // announces each one ahead of time; startedAt is when it becomes audible.
+  function clearChunkTimers() {
+    S.chunkTimers.forEach(clearTimeout);
+    S.chunkTimers = [];
+  }
+
+  function onKokoroChunk(msg) {
+    if (msg.session != null && msg.session !== S.kokoroSession) return; // stale read
+    if (!S.speaking || S.paused) return; // resume re-sends chunk timing
+    const delay = msg.startedAt - Date.now();
+    if (delay > 15) {
+      const t = setTimeout(() => {
+        S.chunkTimers = S.chunkTimers.filter((x) => x !== t);
+        if (S.speaking && !S.paused && msg.session === S.kokoroSession) applyKokoroChunk(msg);
+      }, delay);
+      S.chunkTimers.push(t);
+    } else {
+      applyKokoroChunk(msg);
+    }
   }
 
   function applyKokoroChunk(msg) {
     const si = getSentenceIdx(msg.startWordIdx);
     const sent = si >= 0 ? S.sentences[si] : null;
-    const highlightStart = Math.max(S.currentWord, msg.startWordIdx);
-    const timings = buildKokoroWordTimings(sent, highlightStart, msg.duration);
-    S.currentWord = highlightStart;
-    highlightAt(highlightStart);
+    const timings = buildKokoroWordTimings(sent, msg.startWordIdx, msg.duration);
+    learnSpeechRate(sent, msg);
+    if (msg.startWordIdx > S.currentWord || S.currentSentence !== si) {
+      S.currentWord = Math.max(S.currentWord, msg.startWordIdx);
+      highlightAt(S.currentWord);
+    }
     startTicker(timings, msg.startedAt);
-    S.lastKokoroChunk = {
-      sent,
-      highlightStart,
-      duration: msg.duration,
-      startedAt: msg.startedAt,
-    };
+    S.lastKokoroChunk = { sent, highlightStart: msg.startWordIdx, duration: msg.duration, startedAt: msg.startedAt };
+    setStatus('Playing', true);
+  }
+
+  // Learn Kokoro's real speaking rate from whole-sentence chunks so "min left" is honest.
+  function learnSpeechRate(sent, msg) {
+    if (!sent || msg.startWordIdx !== sent.start || !(msg.duration > 0.8) || !S.charPrefix) return;
+    const chars = S.charPrefix[sent.end + 1] - S.charPrefix[sent.start];
+    if (chars < 12) return;
+    const cps = chars / (msg.duration * (S.speed || 1));
+    S.measuredCps = S.measuredCps ? S.measuredCps * 0.8 + cps * 0.2 : cps;
   }
 
   function restartKokoroTicker() {
@@ -1423,8 +1563,9 @@
       startKokoroDownload();
       return;
     }
-    sendMsg({ action: 'kokoro_stop' });
-    stopTicker(); clearHL();
+    // No separate kokoro_stop: kokoro_speak replaces the running session, and a
+    // stop routed separately through the SW could land after the speak.
+    stopTicker(); clearHL(); clearChunkTimers();
     S.lastKokoroChunk = null;
     S.currentSentence = -1;
     if (!S.words.length) { resetPlaybackState(); return; }
@@ -1439,12 +1580,25 @@
     highlightAt(idx);
     updatePlayBtn(); setStatus('Generating…', true);
 
-    sendMsg({ action: 'kokoro_speak', sentences, speed: S.speed, voice: S.kokoroVoice });
+    sendMsg({
+      action: 'kokoro_speak', sentences, speed: S.speed, voice: S.kokoroVoice, device: S.kokoroDevice,
+      session: ++S.kokoroSession,
+      title: S.readTitle || document.title || location.hostname,
+      site: location.hostname,
+    });
   }
 
   // ── Engine dispatcher ──────────────────────────────────────────────────────
   function speakFrom(idx, endIdx) {
-    if (endIdx != null) S.speakEndIdx = endIdx;
+    if (endIdx != null) {
+      if (S.speakEndIdx == null) S.speakStartIdx = idx;
+      S.speakEndIdx = endIdx;
+    }
+    // Only whole-page reads of the real page get a saved position.
+    S.trackPosition = S.speakEndIdx == null && !S.iframeReadActive && !S.immersiveActive && !!S.words[0]?.el;
+    hideResume();
+    bringPlayerToFront();
+    watchForeignScroll();
     if (S.voiceEngine === 'kokoro') kokoroSpeakFrom(idx);
     else classicSpeakFrom(idx);
   }
@@ -1453,7 +1607,7 @@
     if (S.paused) {
       S.paused = false;
       if (S.voiceEngine === 'kokoro') {
-        sendMsg({ action: 'kokoro_resume' });
+        sendMsg({ action: 'kokoro_resume', session: S.kokoroSession });
         setStatus('Playing', true);
       } else {
         speakFrom(S.currentWord, S.speakEndIdx);
@@ -1462,9 +1616,11 @@
       return;
     }
     if (!S.speaking) return;
-    stopTicker();
+    stopTicker(); clearChunkTimers();
+    S.pausedAt = Date.now();
+    savePosition(true);
     if (S.voiceEngine === 'kokoro') {
-      sendMsg({ action: 'kokoro_pause' });
+      sendMsg({ action: 'kokoro_pause', session: S.kokoroSession });
     } else {
       window.speechSynthesis.cancel();
     }
@@ -1490,14 +1646,16 @@
     }
     S.pendingExport = false;
     if (S.voiceEngine === 'kokoro') {
-      sendMsg({ action: 'kokoro_stop' });
+      sendMsg({ action: 'kokoro_stop', session: S.kokoroSession });
     } else {
       window.speechSynthesis.cancel();
     }
-    stopTicker(); clearHL();
+    if (S.speaking || S.paused) savePosition(true);
+    stopTicker(); clearHL(); clearChunkTimers();
     clearIframeHighlights();
     S.lastKokoroChunk = null;
-    S.speaking = false; S.paused = false; S.speakEndIdx = null;
+    S.speaking = false; S.paused = false; S.speakEndIdx = null; S.speakStartIdx = null;
+    S.readTitle = '';
     if (reset) S.currentWord = 0;
     document.documentElement.classList.remove('vox-reading');
     updatePlayBtn();
@@ -1505,10 +1663,11 @@
     savePrefs();
   }
 
+  // Previous / next sentence. Within a bounded read (selection) stay inside it.
   function skipBack() {
     if (!S.words.length) return;
-    const maxIdx = S.speakEndIdx != null ? S.speakEndIdx : S.words.length - 1;
-    const t = Math.max(0, S.currentWord - 15);
+    const minIdx = S.speakStartIdx != null ? S.speakStartIdx : 0;
+    const t = window.VoxPlayback.prevSentenceStart(S.sentences, S.currentWord, minIdx);
     S.currentSentence = -1;
     if (S.speaking || S.paused) speakFrom(t, S.speakEndIdx);
     else { S.currentWord = t; highlightAt(t); }
@@ -1516,7 +1675,8 @@
   function skipFwd() {
     if (!S.words.length) return;
     const maxIdx = S.speakEndIdx != null ? S.speakEndIdx : S.words.length - 1;
-    const t = Math.min(maxIdx, S.currentWord + 15);
+    const t = window.VoxPlayback.nextSentenceStart(S.sentences, S.currentWord, maxIdx);
+    if (t == null) return;
     S.currentSentence = -1;
     if (S.speaking || S.paused) speakFrom(t, S.speakEndIdx);
     else { S.currentWord = t; highlightAt(t); }
@@ -1600,7 +1760,7 @@
       return;
     }
 
-    if (!document.getElementById('vox-player')) createPlayer();
+    if (!$('vox-player')) createPlayer();
 
     stop(false);
     unwrap();
@@ -1690,21 +1850,22 @@
     });
     document.documentElement.appendChild(ov);
     S.immersiveOverlay = ov; S.immersiveActive = true;
-    document.getElementById('vox-immersive-exit').onclick = exitImmersive;
+    applyAppearance();
+    $('vox-immersive-exit').onclick = exitImmersive;
 
-    document.getElementById('vox-imm-prev').onclick = () => {
+    $('vox-imm-prev').onclick = () => {
       const si = Math.max(0, S.currentSentence - 1);
       if (S.sentences[si]) speakFrom(S.sentences[si].start, S.speakEndIdx);
     };
-    document.getElementById('vox-imm-next').onclick = () => {
+    $('vox-imm-next').onclick = () => {
       const si = Math.min(S.sentences.length - 1, S.currentSentence + 1);
       if (S.sentences[si]) speakFrom(S.sentences[si].start, S.speakEndIdx);
     };
 
-    const btn = document.getElementById('vox-immersive-btn');
+    const btn = $('vox-immersive-btn');
     if (btn) btn.classList.add('active');
     stop(false); unwrap();
-    wrapWords(document.getElementById('vox-immersive-content'));
+    wrapWords($('vox-immersive-content'));
     syncPrintUI();
   }
 
@@ -1712,7 +1873,7 @@
     stop(true); unwrap();
     if (S.immersiveOverlay) { S.immersiveOverlay.remove(); S.immersiveOverlay = null; }
     S.immersiveActive = false;
-    const btn = document.getElementById('vox-immersive-btn');
+    const btn = $('vox-immersive-btn');
     if (btn) btn.classList.remove('active');
     syncPrintUI();
     setStatus('Ready');
@@ -1723,7 +1884,7 @@
       window.print();
       return;
     }
-    const content = document.getElementById('vox-immersive-content');
+    const content = $('vox-immersive-content');
     if (!content) {
       window.print();
       return;
@@ -1753,14 +1914,14 @@
   }
 
   function syncChatReadUI() {
-    const panel = document.getElementById('vox-chat-read-section');
+    const panel = $('vox-chat-read-section');
     if (!panel) return;
     const roots = getChatRoots();
     panel.classList.toggle('vs-hidden', roots.length < 2);
     if (roots.length < 2) return;
 
-    const scopeEl = document.getElementById('chat-read-scope');
-    const idxEl = document.getElementById('chat-read-index');
+    const scopeEl = $('chat-read-scope');
+    const idxEl = $('chat-read-index');
     if (scopeEl) scopeEl.value = S.chatReadScope;
     if (idxEl) {
       idxEl.innerHTML = roots.map((_, i) =>
@@ -1785,7 +1946,7 @@
   }
 
   function syncPrintUI() {
-    const btn = document.getElementById('exp-pdf');
+    const btn = $('exp-pdf');
     if (!btn) return;
     btn.title = S.immersiveActive ? 'Print reader view' : 'Print this page';
   }
@@ -1915,10 +2076,10 @@
   }
 
   function syncExportUI() {
-    const btn = document.getElementById('exp-mp3');
-    const fmt = document.getElementById('export-format');
-    const scope = document.getElementById('export-scope');
-    const bitrate = document.getElementById('export-bitrate');
+    const btn = $('exp-mp3');
+    const fmt = $('export-format');
+    const scope = $('export-scope');
+    const bitrate = $('export-bitrate');
     if (fmt) fmt.value = S.exportFormat;
     if (scope) scope.value = S.exportScope;
     if (bitrate) {
@@ -1963,13 +2124,13 @@
     syncEngineUI();
     syncInstallUI();
     setStatus('Downloading Kokoro model…', true);
-    sendMsg({ action: 'kokoro_load', voice: S.kokoroVoice });
+    sendMsg({ action: 'kokoro_load', voice: S.kokoroVoice, device: S.kokoroDevice });
   }
 
   function syncInstallUI() {
-    const panel = document.getElementById('vox-kokoro-install');
-    const playBtn = document.getElementById('vox-playpause-bar');
-    const cancelBtn = document.getElementById('vox-install-cancel');
+    const panel = $('vox-kokoro-install');
+    const playBtn = $('vox-playpause-bar');
+    const cancelBtn = $('vox-install-cancel');
     if (!panel) return;
     const show = S.kokoroLoading || (S.voiceEngine === 'kokoro' && !S.kokoroModelCached);
     panel.classList.toggle('vs-hidden', !show);
@@ -1997,9 +2158,9 @@
 
   function updateKokoroInstallProgress(pct, file, status) {
     S.kokoroDownloadPct = pct;
-    const bar = document.getElementById('vox-install-progress');
-    const fileEl = document.getElementById('vox-install-file');
-    const statusEl = document.getElementById('vox-install-status');
+    const bar = $('vox-install-progress');
+    const fileEl = $('vox-install-file');
+    const statusEl = $('vox-install-status');
     if (bar) bar.value = Math.max(0, Math.min(100, pct));
     if (fileEl) fileEl.textContent = file || '';
     if (statusEl) {
@@ -2017,7 +2178,7 @@
   }
 
   function populateKokoroVoices() {
-    const sel = document.getElementById('vox-kokoro-voice-select');
+    const sel = $('vox-kokoro-voice-select');
     if (!sel) return;
     sel.innerHTML = '';
     KOKORO_VOICES.forEach(v => {
@@ -2031,7 +2192,7 @@
   }
 
   function setKokoroUIState(state) {
-    const voiceSel = document.getElementById('vox-kokoro-voice-select');
+    const voiceSel = $('vox-kokoro-voice-select');
     if (!voiceSel) return;
     if (state === 'loading' || state === 'downloading') {
       voiceSel.disabled = true;
@@ -2046,10 +2207,10 @@
 
   function syncEngineUI() {
     // Show/hide classic vs kokoro voice sections
-    const classicSection = document.getElementById('vox-classic-voice-section');
-    const kokoroSection  = document.getElementById('vox-kokoro-section');
-    const engClassic = document.getElementById('eng-classic');
-    const engKokoro  = document.getElementById('eng-kokoro');
+    const classicSection = $('vox-classic-voice-section');
+    const kokoroSection  = $('vox-kokoro-section');
+    const engClassic = $('eng-classic');
+    const engKokoro  = $('eng-kokoro');
     if (classicSection) classicSection.classList.toggle('vs-hidden', S.voiceEngine === 'kokoro');
     if (kokoroSection)  kokoroSection.classList.toggle('vs-hidden', S.voiceEngine === 'classic');
     if (engClassic) engClassic.classList.toggle('active', S.voiceEngine === 'classic');
@@ -2059,184 +2220,42 @@
       // S.kokoroLoading reflects in-progress load this session; takes priority over cached flag
       setKokoroUIState(S.kokoroLoading || !S.kokoroModelCached ? 'loading' : 'ready');
     }
+    syncVoicePill();
     syncExportUI();
   }
 
   // ── Player ─────────────────────────────────────────────────────────────────
   function createPlayer() {
-    if (document.getElementById('vox-player')) {
-      document.getElementById('vox-player').classList.remove('vox-hidden');
-      populateVoices(); populateKokoroVoices(); syncEngineUI(); syncInstallUI(); syncExportUI(); syncPrintUI(); return;
+    const existing = S.playerEl && S.playerEl.isConnected ? S.playerEl : null;
+    if (existing) {
+      existing.classList.remove('vox-hidden');
+      bringPlayerToFront();
+      populateVoices(); populateKokoroVoices(); syncEngineUI(); syncInstallUI(); syncExportUI(); syncPrintUI();
+      applyAppearance();
+      updateProgress();
+      offerResume();
+      return;
     }
 
-    const p = document.createElement('div');
-    p.id = 'vox-player';
-    p.setAttribute('role', 'region');
-    p.setAttribute('aria-label', 'Vox Reader player');
-
-    p.innerHTML = `
-      <!-- Compact bar -->
-      <div id="vox-bar">
-        <button class="vox-bar-btn" id="vox-back-bar" title="Back 15 words" aria-label="Skip back 15 words">
-          <span class="vox-skip-label" aria-hidden="true"><span class="vox-skip-icon">↺</span><span>-15</span></span>
-        </button>
-        <button id="vox-playpause-bar" aria-label="Play">▶</button>
-        <button class="vox-bar-btn" id="vox-fwd-bar" title="Forward 15 words" aria-label="Skip forward 15 words">
-          <span class="vox-skip-label" aria-hidden="true"><span class="vox-skip-icon">↻</span><span>+15</span></span>
-        </button>
-        <div class="vox-div" aria-hidden="true"></div>
-        <div id="vox-progress-wrap">
-          <input type="range" id="vox-progress" min="0" max="1000" value="0"
-            aria-label="Reading progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-        </div>
-        <div class="vox-div" aria-hidden="true"></div>
-        <button class="vox-bar-btn" id="vox-immersive-btn" title="Immersive reader" aria-label="Toggle immersive reader">☰</button>
-        <button id="vox-speed-pill" aria-label="Playback speed">1.0×</button>
-        <button class="vox-bar-btn" id="vox-settings-btn" title="Settings" aria-label="Open settings">⚙</button>
-        <button class="vox-bar-btn" id="vox-close-bar" title="Close" aria-label="Close player">✕</button>
-      </div>
-
-      <div id="vox-kokoro-install" class="vs-hidden" role="alert" aria-live="polite">
-        <p id="vox-install-status">AI Neural voice required — downloading once (~86MB)</p>
-        <progress id="vox-install-progress" max="100" value="0" aria-label="Download progress"></progress>
-        <p id="vox-install-file" class="vs-label-muted"></p>
-        <button type="button" class="vs-install-cancel vs-hidden" id="vox-install-cancel">Cancel download</button>
-      </div>
-
-      <!-- Settings panel -->
-      <div id="vox-settings" role="dialog" aria-label="Voice settings">
-        <div id="vox-settings-header">
-          <span class="vox-settings-title">Settings</span>
-          <button id="vox-settings-close" aria-label="Close settings">✕</button>
-        </div>
-        <div id="vox-settings-body">
-
-          <!-- Speed + Voice in one compact row area -->
-          <div class="vs">
-            <div class="vs-speed-row">
-              <span class="vs-speed-dim">0.5×</span>
-              <input type="range" id="vox-speed-slider" min="0.5" max="3.0" step="0.05" value="1.0" aria-label="Speed">
-              <span class="vs-speed-val" id="vox-speed-val">1.0×</span>
-            </div>
-          </div>
-
-          <!-- Voice Engine + voice select — single compact section -->
-          <div class="vs">
-            <div class="vs-engine-row" role="group" aria-label="Voice engine">
-              <button class="vs-engine-btn ${S.voiceEngine==='classic'?'active':''}" id="eng-classic" aria-pressed="${S.voiceEngine==='classic'}">Classic</button>
-              <button class="vs-engine-btn ${S.voiceEngine==='kokoro'?'active':''}" id="eng-kokoro" aria-pressed="${S.voiceEngine==='kokoro'}">AI Neural</button>
-            </div>
-            <!-- Classic voice -->
-            <div class="${S.voiceEngine==='kokoro'?'vs-hidden':''}" id="vox-classic-voice-section" style="margin-top:6px">
-              <select id="vox-voice-select" aria-label="Select voice"></select>
-            </div>
-            <!-- Kokoro voice — model downloads on first enable -->
-            <div class="${S.voiceEngine==='classic'?'vs-hidden':''}" id="vox-kokoro-section" style="margin-top:6px">
-              <select id="vox-kokoro-voice-select" aria-label="Kokoro voice"></select>
-              <p class="vs-kokoro-info">Default voice: Bella · one-time ~86MB download</p>
-            </div>
-          </div>
-
-          <!-- Highlight toggles + style — compact two-row layout -->
-          <div class="vs">
-            <div class="vs-hl-row">
-              <div class="vs-hl-left">
-                <div class="vs-hl-toggle-pair">
-                  <span>Word</span>
-                  <button class="vs-toggle ${S.highlightWord?'on':''}" id="tog-word" role="switch" aria-checked="${S.highlightWord}" aria-label="Highlight word"></button>
-                </div>
-                <div class="vs-hl-toggle-pair">
-                  <span>Sentence</span>
-                  <button class="vs-toggle ${S.highlightSentence?'on':''}" id="tog-sentence" role="switch" aria-checked="${S.highlightSentence}" aria-label="Highlight sentence"></button>
-                </div>
-              </div>
-              <div class="vs-hl-right">
-                <button class="vs-hl-btn ${S.sentenceStyle==='bg'?'active':''}" id="hl-bg" aria-pressed="${S.sentenceStyle==='bg'}">BG</button>
-                <button class="vs-hl-btn ${S.sentenceStyle==='underline'?'active':''}" id="hl-ul" aria-pressed="${S.sentenceStyle==='underline'}">___</button>
-                <input class="vs-hex-mini" id="hex-word" maxlength="7" value="${S.wordColor}" title="Word color" style="border-color:${S.wordColor}">
-                <input class="vs-hex-mini" id="hex-sentence" maxlength="7" value="${S.sentenceHex}" title="Sentence color" style="border-color:${S.sentenceHex}">
-              </div>
-            </div>
-          </div>
-
-          <!-- Shortcuts — inline 3-key row -->
-          <div class="vs">
-            <div class="vs-sc-inline">
-              <span class="vs-sc-lbl">Alt+</span>
-              <label class="vs-sc-pair"><span>▶</span><input class="vs-sc-input" id="sc-play" maxlength="1"></label>
-              <label class="vs-sc-pair"><span>■</span><input class="vs-sc-input" id="sc-stop" maxlength="1"></label>
-              <label class="vs-sc-pair"><span>sel</span><input class="vs-sc-input" id="sc-read" maxlength="1"></label>
-              <label class="vs-sc-pair"><span>exp</span><input class="vs-sc-input" id="sc-export" maxlength="1"></label>
-              <button class="vs-sc-save" id="sc-save">Save</button>
-            </div>
-          </div>
-
-          <!-- Chat reply scope (shown when multiple assistant messages detected) -->
-          <div class="vs vs-hidden" id="vox-chat-read-section">
-            <label class="vs-label">Chat reading</label>
-            <div style="display:flex;gap:6px;margin-top:4px;flex-wrap:wrap">
-              <select id="chat-read-scope" class="vs-export-format" style="max-width:120px" aria-label="Which replies to read">
-                <option value="all" ${S.chatReadScope==='all'?'selected':''}>All replies</option>
-                <option value="latest" ${S.chatReadScope==='latest'?'selected':''}>Latest only</option>
-                <option value="single" ${S.chatReadScope==='single'?'selected':''}>One reply</option>
-              </select>
-              <select id="chat-read-index" class="vs-export-format vs-hidden" style="max-width:120px" aria-label="Reply number"></select>
-            </div>
-          </div>
-
-          <!-- Export + status on same row -->
-          <div class="vs vs-bottom-row">
-            <button class="vs-export-btn" id="exp-pdf" title="Print this page">Print</button>
-            <select id="export-scope" class="vs-export-format" aria-label="Export scope" title="What to export">
-              <option value="all" ${S.exportScope==='all'?'selected':''}>All</option>
-              <option value="selection" ${S.exportScope==='selection'?'selected':''}>Selection</option>
-              <option value="here" ${S.exportScope==='here'?'selected':''}>From here</option>
-            </select>
-            <select id="export-format" class="vs-export-format" aria-label="Export format" title="Export format">
-              <option value="mp3" ${S.exportFormat==='mp3'?'selected':''}>MP3</option>
-              <option value="wav" ${S.exportFormat==='wav'?'selected':''}>WAV</option>
-            </select>
-            <select id="export-bitrate" class="vs-export-format ${S.exportFormat==='wav'?'vs-hidden':''}" aria-label="MP3 bitrate" title="MP3 bitrate">
-              <option value="96" ${S.exportBitrate===96?'selected':''}>96k</option>
-              <option value="128" ${S.exportBitrate===128?'selected':''}>128k</option>
-              <option value="192" ${S.exportBitrate===192?'selected':''}>192k</option>
-            </select>
-            <button class="vs-export-btn" id="exp-mp3" title="Download audio (Kokoro) or preview (classic)">Export</button>
-            <span id="vox-status" role="status" aria-live="polite">Ready</span>
-          </div>
-
-        </div>
-      </div>`;
-
-    document.documentElement.appendChild(p);
-    S.playerEl = p;
-    chrome.storage.sync.get(['barX','barY'], (pos) => {
-      if (pos.barX != null) {
-        p.style.left = pos.barX + 'px';
-        p.style.top = pos.barY + 'px';
-        p.style.bottom = 'auto';
-        p.style.transform = 'none';
-      }
-    });
+    const { host } = window.VoxPlayerUI.mount(S);
+    S.playerEl = host;
     bindEvents();
     loadVoices();
     populateKokoroVoices();
     window.speechSynthesis.addEventListener('voiceschanged', loadVoices);
-    document.getElementById('vox-speed-slider').value = S.speed;
-    const sl = S.speed.toFixed(1) + '×';
-    document.getElementById('vox-speed-val').textContent = sl;
-    document.getElementById('vox-speed-pill').textContent = sl;
-    document.getElementById('sc-play').value = S.shortcuts.play;
-    document.getElementById('sc-stop').value = S.shortcuts.stop;
-    document.getElementById('sc-read').value = S.shortcuts.read;
-    document.getElementById('sc-export').value = S.shortcuts.export;
-    // If engine was already set to kokoro from saved prefs, mark loading before syncEngineUI
-    // so the UI renders in loading state, then kick off the model load.
-    // Offscreen handles already-loaded case with `if (synthesizer) return`.
+    $('sc-play').value = S.shortcuts.play;
+    $('sc-stop').value = S.shortcuts.stop;
+    $('sc-read').value = S.shortcuts.read;
+    $('sc-export').value = S.shortcuts.export;
+    syncSpeedUI();
     startChatObserver();
     syncEngineUI();
     syncPrintUI();
     syncChatReadUI();
+    applyAppearance();
+    syncDeviceUI();
+    updateProgress();
+    offerResume();
     if (S.voiceEngine === 'kokoro' && !S.kokoroModelCached) {
       startKokoroDownload();
     } else {
@@ -2244,16 +2263,73 @@
     }
   }
 
+  // Overlays such as Focus Reader's view use the same max z-index; the later
+  // element in the DOM wins, so re-append the player above them.
+  function bringPlayerToFront() {
+    const host = S.playerEl;
+    if (host && host.isConnected && host !== document.documentElement.lastElementChild) {
+      document.documentElement.appendChild(host);
+    }
+  }
+
+  // ── Popovers (speed, voice, settings) — one open at a time ──
+  const POPOVERS = { speed: ['vox-speed-menu', 'vox-speed-pill'], voice: ['vox-voice-menu', 'vox-voice-pill'], settings: ['vox-settings', 'vox-settings-btn'] };
+
+  function togglePopover(name, force) {
+    for (const [key, [popId, btnId]] of Object.entries(POPOVERS)) {
+      const open = key === name ? (force != null ? force : !$(popId)?.classList.contains('open')) : false;
+      $(popId)?.classList.toggle('open', open);
+      $(btnId)?.setAttribute('aria-expanded', String(open));
+      if (key === 'settings') S.settingsOpen = open;
+    }
+    if (name === 'settings' && S.settingsOpen) syncChatReadUI();
+  }
+
+  function closePopovers() { togglePopover(null); }
+
+  function syncSpeedUI() {
+    const label = window.VoxPlayerUI.speedLabel(S.speed);
+    const slider = $('vox-speed-slider');
+    if (slider) slider.value = S.speed;
+    if ($('vox-speed-val')) $('vox-speed-val').textContent = label;
+    if ($('vox-speed-pill')) $('vox-speed-pill').textContent = label;
+    S.playerEl?.shadowRoot?.querySelectorAll('.vox-speed-opt').forEach((b) => {
+      b.setAttribute('aria-checked', String(Math.abs(parseFloat(b.dataset.speed) - S.speed) < 0.01));
+    });
+    updateProgress();
+  }
+
+  function setSpeed(v, { restart = true } = {}) {
+    S.speed = Math.max(0.5, Math.min(3, Math.round(v * 100) / 100));
+    syncSpeedUI();
+    savePrefs();
+    if (restart && (S.speaking || S.paused)) speakFrom(S.currentWord, S.speakEndIdx);
+  }
+
+  function syncVoicePill() {
+    const pill = $('vox-voice-pill');
+    if (!pill) return;
+    let name;
+    if (S.voiceEngine === 'kokoro') {
+      const v = KOKORO_VOICES.find((x) => x.id === S.kokoroVoice);
+      name = v ? v.label.split(' ')[0] : 'Bella';
+    } else {
+      name = (S.voice?.name || 'System').replace(/Microsoft|Google|Apple/gi, '').trim().split(/\s+/)[0];
+    }
+    pill.textContent = name;
+    pill.title = S.voiceEngine === 'kokoro' ? `AI voice: ${name}` : `System voice: ${name}`;
+  }
+
   function bindEvents() {
-    document.getElementById('vox-close-bar').onclick = () => { stop(false); S.playerEl.classList.add('vox-hidden'); };
+    $('vox-close-bar').onclick = () => { stop(false); closePopovers(); S.playerEl.classList.add('vox-hidden'); };
 
     let _capturedSel = null;
-    document.getElementById('vox-playpause-bar').addEventListener('mousedown', () => {
+    $('vox-playpause-bar').addEventListener('mousedown', () => {
       const text = getSelectionText();
       _capturedSel = text ? { text } : null;
     });
 
-    document.getElementById('vox-playpause-bar').onclick = async () => {
+    $('vox-playpause-bar').onclick = async () => {
       if (!S.speaking && !S.paused) {
         if (S.exporting) {
           S.playAfterExport = true;
@@ -2272,87 +2348,82 @@
       } else { pauseResume(); }
     };
 
-    document.getElementById('vox-back-bar').onclick = skipBack;
-    document.getElementById('vox-fwd-bar').onclick = skipFwd;
-    document.getElementById('vox-immersive-btn').onclick = toggleImmersive;
+    $('vox-back-bar').onclick = skipBack;
+    $('vox-fwd-bar').onclick = skipFwd;
+    $('vox-immersive-btn').onclick = toggleImmersive;
 
-    const speeds = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0];
-    document.getElementById('vox-speed-pill').onclick = () => {
-      const ci = speeds.findIndex(s => Math.abs(s - S.speed) < 0.01);
-      S.speed = speeds[(ci + 1) % speeds.length];
-      const label = S.speed + '×';
-      document.getElementById('vox-speed-slider').value = S.speed;
-      document.getElementById('vox-speed-val').textContent = label;
-      document.getElementById('vox-speed-pill').textContent = label;
-      savePrefs();
-      if (S.speaking || S.paused) { const i = S.currentWord; speakFrom(i); }
-    };
-
-    document.getElementById('vox-settings-btn').onclick = () => {
-      S.settingsOpen = !S.settingsOpen;
-      document.getElementById('vox-settings').classList.toggle('open', S.settingsOpen);
-      if (S.settingsOpen) syncChatReadUI();
-    };
-    document.getElementById('vox-settings-close').onclick = () => {
-      S.settingsOpen = false;
-      document.getElementById('vox-settings').classList.remove('open');
-    };
-
-    const speedSlider = document.getElementById('vox-speed-slider');
+    // Speed menu
+    $('vox-speed-pill').onclick = () => togglePopover('speed');
+    S.playerEl.shadowRoot.querySelectorAll('.vox-speed-opt').forEach((b) => {
+      b.onclick = () => setSpeed(parseFloat(b.dataset.speed));
+    });
+    const speedSlider = $('vox-speed-slider');
     speedSlider.oninput = (e) => {
       S.speed = parseFloat(e.target.value);
-      const label = S.speed.toFixed(2).replace(/\.?0+$/,'') + '×';
-      document.getElementById('vox-speed-val').textContent = label;
-      document.getElementById('vox-speed-pill').textContent = label;
+      syncSpeedUI();
     };
-    speedSlider.onchange = (e) => {
-      S.speed = parseFloat(e.target.value);
-      savePrefs();
-      if (S.speaking || S.paused) { const i = S.currentWord; speakFrom(i); }
-    };
+    speedSlider.onchange = (e) => setSpeed(parseFloat(e.target.value));
+
+    // Voice menu
+    $('vox-voice-pill').onclick = () => togglePopover('voice');
+    $('vox-settings-btn').onclick = () => togglePopover('settings');
+    $('vox-settings-close').onclick = () => togglePopover('settings', false);
+
+    // Clicks outside the player close its popovers; Escape too.
+    document.addEventListener('mousedown', (e) => {
+      if (!S.playerEl || e.composedPath().includes(S.playerEl)) return;
+      closePopovers();
+    }, true);
+    S.playerEl.shadowRoot.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { closePopovers(); e.stopPropagation(); }
+    });
 
     // Classic voice select
-    document.getElementById('vox-voice-select').onchange = (e) => {
+    $('vox-voice-select').onchange = (e) => {
       const v = window.speechSynthesis.getVoices().find(v => v.name === e.target.value);
       if (v) {
-        S.voice = v; S.selectedVoiceName = v.name; savePrefs();
+        S.voice = v; S.selectedVoiceName = v.name; savePrefs(); syncVoicePill();
         if (S.speaking) { const i = S.currentWord; stop(false); speakFrom(i); }
       }
     };
 
     // Voice engine toggle
-    document.getElementById('eng-classic').onclick = () => {
+    $('eng-classic').onclick = () => {
       if (S.voiceEngine === 'classic') return;
       stop(false);
       S.pendingPlayAfterKokoro = false;
       S.voiceEngine = 'classic'; savePrefs(); syncEngineUI();
-      document.getElementById('eng-classic').setAttribute('aria-pressed', 'true');
-      document.getElementById('eng-kokoro').setAttribute('aria-pressed', 'false');
+      $('eng-classic').setAttribute('aria-pressed', 'true');
+      $('eng-kokoro').setAttribute('aria-pressed', 'false');
     };
-    document.getElementById('eng-kokoro').onclick = () => {
+    $('eng-kokoro').onclick = () => {
       if (S.voiceEngine === 'kokoro') return;
       stop(false);
       S.voiceEngine = 'kokoro';
       savePrefs();
       syncEngineUI();
-      document.getElementById('eng-classic').setAttribute('aria-pressed', 'false');
-      document.getElementById('eng-kokoro').setAttribute('aria-pressed', 'true');
+      $('eng-classic').setAttribute('aria-pressed', 'false');
+      $('eng-kokoro').setAttribute('aria-pressed', 'true');
       if (!S.kokoroModelCached) startKokoroDownload();
       else { setKokoroUIState('ready'); setStatus('AI voice ready — press Play', true); }
     };
 
-    document.getElementById('vox-kokoro-voice-select').onchange = (e) => {
+    $('vox-kokoro-voice-select').onchange = (e) => {
       S.kokoroVoice = e.target.value;
       savePrefs();
+      syncVoicePill();
       if (S.kokoroModelCached) {
         sendMsg({ action: 'kokoro_warm_voice', voice: S.kokoroVoice });
         if (S.speaking || S.paused) speakFrom(S.currentWord);
       }
     };
 
-    // Progress bar
-    const prog = document.getElementById('vox-progress');
-    prog.oninput = () => { S.scrubbing = true; };
+    // Progress bar (scrubber)
+    const prog = $('vox-progress');
+    prog.oninput = () => {
+      S.scrubbing = true;
+      prog.style.setProperty('--pct', (prog.value / 10) + '%');
+    };
     prog.onchange = (e) => {
       if (!S.words.length) return;
       S.scrubbing = false;
@@ -2366,38 +2437,29 @@
       if (S.speaking || S.paused) speakFrom(idx);
     };
 
-    // Highlight toggles
-    document.getElementById('tog-word').onclick = (e) => {
-      S.highlightWord = !S.highlightWord;
-      e.target.classList.toggle('on', S.highlightWord);
-      e.target.setAttribute('aria-checked', String(S.highlightWord));
-      savePrefs();
-    };
-    document.getElementById('tog-sentence').onclick = (e) => {
-      S.highlightSentence = !S.highlightSentence;
-      e.target.classList.toggle('on', S.highlightSentence);
-      e.target.setAttribute('aria-checked', String(S.highlightSentence));
-      savePrefs();
-    };
-    document.getElementById('hl-bg').onclick = () => {
+    bindAppearanceControls();
+    $('vox-resume-yes').onclick = resumeFromSaved;
+    $('vox-resume-no').onclick = startOver;
+    $('vox-back-to-reading').onclick = backToReading;
+    $('hl-bg').onclick = () => {
       S.sentenceStyle = 'bg';
-      document.getElementById('hl-bg').classList.add('active');
-      document.getElementById('hl-bg').setAttribute('aria-pressed','true');
-      document.getElementById('hl-ul').classList.remove('active');
-      document.getElementById('hl-ul').setAttribute('aria-pressed','false');
+      $('hl-bg').classList.add('active');
+      $('hl-bg').setAttribute('aria-pressed','true');
+      $('hl-ul').classList.remove('active');
+      $('hl-ul').setAttribute('aria-pressed','false');
       applyColors(); savePrefs();
     };
-    document.getElementById('hl-ul').onclick = () => {
+    $('hl-ul').onclick = () => {
       S.sentenceStyle = 'underline';
-      document.getElementById('hl-ul').classList.add('active');
-      document.getElementById('hl-ul').setAttribute('aria-pressed','true');
-      document.getElementById('hl-bg').classList.remove('active');
-      document.getElementById('hl-bg').setAttribute('aria-pressed','false');
+      $('hl-ul').classList.add('active');
+      $('hl-ul').setAttribute('aria-pressed','true');
+      $('hl-bg').classList.remove('active');
+      $('hl-bg').setAttribute('aria-pressed','false');
       applyColors(); savePrefs();
     };
 
     function bindHex(inputId, setter) {
-      const el = document.getElementById(inputId);
+      const el = $(inputId);
       el.oninput = (e) => {
         let val = e.target.value.trim();
         if (!val.startsWith('#')) val = '#' + val;
@@ -2411,103 +2473,370 @@
     bindHex('hex-word', v => S.wordColor = v);
     bindHex('hex-sentence', v => S.sentenceHex = v);
 
-    document.getElementById('sc-save').onclick = () => {
-      S.shortcuts.play = document.getElementById('sc-play').value || 'p';
-      S.shortcuts.stop = document.getElementById('sc-stop').value || 's';
-      S.shortcuts.read = document.getElementById('sc-read').value || 'r';
-      S.shortcuts.export = document.getElementById('sc-export').value || 'e';
+    $('sc-save').onclick = () => {
+      S.shortcuts.play = $('sc-play').value || 'p';
+      S.shortcuts.stop = $('sc-stop').value || 's';
+      S.shortcuts.read = $('sc-read').value || 'r';
+      S.shortcuts.export = $('sc-export').value || 'e';
       savePrefs(); setStatus('Saved!');
     };
 
-    document.getElementById('exp-pdf').onclick = () => printReadable();
-    document.getElementById('exp-mp3').onclick = exportAudio;
-    document.getElementById('vox-install-cancel')?.addEventListener('click', cancelKokoroDownload);
-    document.getElementById('export-format').onchange = (e) => {
+    $('exp-pdf').onclick = () => printReadable();
+    $('exp-mp3').onclick = exportAudio;
+    $('vox-install-cancel')?.addEventListener('click', cancelKokoroDownload);
+    $('export-format').onchange = (e) => {
       S.exportFormat = e.target.value === 'wav' ? 'wav' : 'mp3';
       savePrefs();
       syncExportUI();
     };
-    document.getElementById('export-scope').onchange = (e) => {
+    $('export-scope').onchange = (e) => {
       const v = e.target.value;
       S.exportScope = (v === 'selection' || v === 'here') ? v : 'all';
       savePrefs();
       syncExportUI();
     };
-    document.getElementById('export-bitrate').onchange = (e) => {
+    $('export-bitrate').onchange = (e) => {
       const n = parseInt(e.target.value, 10);
       S.exportBitrate = [96, 128, 192].includes(n) ? n : 128;
       savePrefs();
     };
-    document.getElementById('chat-read-scope').onchange = (e) => {
+    $('chat-read-scope').onchange = (e) => {
       const v = e.target.value;
       S.chatReadScope = (v === 'latest' || v === 'single') ? v : 'all';
       onChatReadScopeChange();
     };
-    document.getElementById('chat-read-index').onchange = (e) => {
+    $('chat-read-index').onchange = (e) => {
       S.chatReadIndex = Math.max(0, parseInt(e.target.value, 10) || 0);
       onChatReadScopeChange();
     };
 
-    // Click-to-jump (only while speaking/paused)
+    // Click-to-jump (only while speaking/paused). composedPath() reaches words
+    // inside open shadow roots (e.g. Focus Reader's view).
     document.addEventListener('click', (e) => {
       if (!S.speaking && !S.paused) return;
-      const sp = e.target.closest('.vox-word');
+      const target = e.composedPath()[0];
+      const sp = target?.closest?.('.vox-word');
       if (!sp || sp.dataset.voxIndex == null) return;
       const idx = parseInt(sp.dataset.voxIndex, 10);
       if (S.speakEndIdx != null && idx > S.speakEndIdx) return;
       speakFrom(idx, S.speakEndIdx);
-    });
-
-    // Draggable bar
-    const bar = document.getElementById('vox-bar');
-    bar.addEventListener('mousedown', (e) => {
-      if (e.target.closest('button,input,select')) return;
-      S.dragging = true;
-      const rect = S.playerEl.getBoundingClientRect();
-      S.dragOffsetX = e.clientX - rect.left;
-      S.dragOffsetY = e.clientY - rect.top;
-      S.playerEl.style.left = rect.left + 'px';
-      S.playerEl.style.top = rect.top + 'px';
-      S.playerEl.style.bottom = 'auto';
-      S.playerEl.style.transform = 'none';
-      e.preventDefault();
-    });
-    let _dragSaveTimer = null;
-    document.addEventListener('mousemove', (e) => {
-      if (!S.dragging) return;
-      const x = Math.max(0, Math.min(window.innerWidth - S.playerEl.offsetWidth, e.clientX - S.dragOffsetX));
-      const y = Math.max(0, Math.min(window.innerHeight - S.playerEl.offsetHeight, e.clientY - S.dragOffsetY));
-      S.playerEl.style.left = x + 'px';
-      S.playerEl.style.top = y + 'px';
-      clearTimeout(_dragSaveTimer);
-      _dragSaveTimer = setTimeout(() => chrome.storage.sync.set({ barX: x, barY: y }), 300);
-    });
-    document.addEventListener('mouseup', () => { S.dragging = false; });
-    window.addEventListener('blur', () => { S.dragging = false; });
+    }, true);
   }
 
   function updatePlayBtn() {
-    const btn = document.getElementById('vox-playpause-bar');
+    const btn = $('vox-playpause-bar');
     if (!btn) return;
     const playing = S.speaking && !S.paused;
-    btn.textContent = playing ? '⏸' : '▶';
+    btn.innerHTML = playing ? window.VoxPlayerUI.ICON.pause : window.VoxPlayerUI.ICON.play;
     btn.setAttribute('aria-label', playing ? 'Pause' : 'Play');
     syncInstallUI();
   }
 
   function setStatus(text, active = false) {
-    const el = document.getElementById('vox-status');
+    const el = $('vox-status');
     if (el) { el.textContent = text; el.className = active ? 'playing' : ''; }
   }
 
+  function spokenOf(w) {
+    if (!w) return '';
+    return w.spoken != null ? w.spoken : w.text;
+  }
+
+  // Prefix sums of spoken characters, rebuilt whenever the word list changes.
+  function rebuildCharIndex() {
+    const pre = new Array(S.words.length + 1);
+    pre[0] = 0;
+    for (let i = 0; i < S.words.length; i++) {
+      const sp = spokenOf(S.words[i]);
+      pre[i + 1] = pre[i] + (sp ? sp.length + 1 : 0);
+    }
+    S.charPrefix = pre;
+  }
+
+  function updateTimeLeft() {
+    const el = $('vox-time-left');
+    if (!el) return;
+    if (!S.words.length) {
+      // Not wrapped yet: estimate the whole readable text so the bar is useful before Play.
+      const chars = rootsTextLength(getReadableRoots());
+      el.textContent = chars > 40 ? window.VoxPlayback.formatTimeLeft(window.VoxPlayback.secondsLeft(chars, S.speed)) : '';
+      return;
+    }
+    if (!S.charPrefix || S.charPrefix.length !== S.words.length + 1) rebuildCharIndex();
+    const end = (S.speakEndIdx != null ? S.speakEndIdx : S.words.length - 1) + 1;
+    const from = Math.min(Math.max(0, S.currentWord), end);
+    const chars = S.charPrefix[end] - S.charPrefix[from];
+    const cps = S.voiceEngine === 'kokoro' && S.measuredCps ? S.measuredCps : window.VoxPlayback.BASE_CPS;
+    const secs = window.VoxPlayback.secondsLeft(chars, S.speed) * (window.VoxPlayback.BASE_CPS / cps);
+    el.textContent = window.VoxPlayback.formatTimeLeft(secs);
+  }
+
   function updateProgress() {
-    if (S.scrubbing) return;
-    const el = document.getElementById('vox-progress');
-    if (!el || S.words.length < 1) return;
-    const denom = Math.max(1, S.words.length - 1);
-    const val = Math.floor((S.currentWord / denom) * 1000);
-    el.value = val;
-    el.setAttribute('aria-valuenow', Math.round((S.currentWord / denom) * 100));
+    const el = $('vox-progress');
+    if (!el) return;
+    if (!S.scrubbing && S.words.length >= 1) {
+      const denom = Math.max(1, S.words.length - 1);
+      const frac = Math.min(1, Math.max(0, S.currentWord / denom));
+      el.value = Math.floor(frac * 1000);
+      el.style.setProperty('--pct', (frac * 100).toFixed(1) + '%');
+      el.setAttribute('aria-valuenow', Math.round(frac * 100));
+      el.setAttribute('aria-valuetext', `${Math.round(frac * 100)}%`);
+    }
+    updateTimeLeft();
+    if (S.speaking && !S.paused) savePosition(false);
+  }
+
+  // ── Segmented settings: highlight mode + appearance ──────────────────────
+  function bindSeg(id, onPick) {
+    const group = $(id);
+    if (!group) return;
+    group.querySelectorAll('button').forEach((b) => {
+      b.onclick = () => {
+        group.querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+        onPick(b.dataset.value);
+      };
+    });
+  }
+
+  function bindAppearanceControls() {
+    bindSeg('hl-mode', (v) => {
+      setHighlightMode(v);
+      savePrefs();
+      if (S.speaking || S.paused) {
+        clearHL();
+        S.currentSentence = -1;
+        highlightAt(S.currentWord);
+      }
+    });
+    bindSeg('theme-seg', (v) => { S.theme = v; applyAppearance(); savePrefs(); });
+    bindSeg('device-seg', (v) => {
+      S.kokoroDevice = v === 'wasm' ? 'wasm' : 'auto';
+      savePrefs();
+      syncDeviceUI();
+      if (S.voiceEngine === 'kokoro' && S.kokoroModelCached && !S.speaking) {
+        setStatus('Switching AI voice engine…', true);
+        sendMsg({ action: 'kokoro_load', voice: S.kokoroVoice, device: S.kokoroDevice });
+      }
+    });
+    bindSeg('font-seg', (v) => { S.readerFont = v; applyAppearance(); savePrefs(); });
+    bindSeg('width-seg', (v) => { S.readerWidth = v; applyAppearance(); savePrefs(); });
+    bindSeg('line-seg', (v) => { S.readerLine = v; applyAppearance(); savePrefs(); });
+    const size = (d) => { S.readerSize = Math.min(30, Math.max(14, S.readerSize + d)); applyAppearance(); savePrefs(); };
+    $('size-down').onclick = () => size(-1);
+    $('size-up').onclick = () => size(1);
+  }
+
+  function syncDeviceUI() {
+    const note = $('vox-device-note');
+    if (!note) return;
+    const using = S.kokoroBackend === 'webgpu' ? 'Using GPU (WebGPU).' : S.kokoroBackend === 'wasm' ? 'Using CPU.' : '';
+    note.textContent = S.kokoroDevice === 'wasm'
+      ? `CPU only: ~86 MB model, slower than real time on some machines. ${using}`
+      : `GPU when available (~330 MB model, much faster), CPU otherwise. ${using}`;
+  }
+
+  const READER_WIDTHS = { narrow: '560px', medium: '680px', wide: '860px' };
+
+  /** Theme on the player host; theme + typography on the immersive reader. */
+  function applyAppearance() {
+    if (S.playerEl) S.playerEl.dataset.theme = S.theme;
+    const sv = $('size-val');
+    if (sv) sv.textContent = `${S.readerSize}px`;
+    const ov = S.immersiveOverlay;
+    if (!ov) return;
+    ov.dataset.theme = S.theme;
+    ov.style.setProperty('--vox-r-font', S.readerFont === 'sans'
+      ? "-apple-system, 'Segoe UI', system-ui, sans-serif"
+      : "Georgia, 'Times New Roman', serif");
+    ov.style.setProperty('--vox-r-size', `${S.readerSize}px`);
+    ov.style.setProperty('--vox-r-width', READER_WIDTHS[S.readerWidth] || READER_WIDTHS.medium);
+    ov.style.setProperty('--vox-r-line', S.readerLine);
+  }
+
+  // ── Per-page reading position (content/lib/positions.js) ──────────────────
+  const POS_KEY = window.VoxPositions.POSITIONS_KEY;
+  let _posSavedAt = 0;
+  let _resumeEntry = null;
+
+  function currentPageKey() { return window.VoxPositions.pageKey(location.href); }
+
+  function savePosition(force) {
+    if (!S.trackPosition || !S.words.length) return;
+    const now = Date.now();
+    if (!force && now - _posSavedAt < 3000) return;
+    _posSavedAt = now;
+    const idx = Math.min(S.currentWord, S.words.length - 1);
+    const anchor = S.words.slice(idx, idx + 6).map((w) => w.text).join(' ');
+    const entry = window.VoxPositions.makeEntry(idx, S.words.length, anchor);
+    try {
+      chrome.storage.local.get(POS_KEY, (r) => {
+        const map = window.VoxPositions.upsertPosition(r?.[POS_KEY], currentPageKey(), entry);
+        chrome.storage.local.set({ [POS_KEY]: map });
+      });
+    } catch (_) { /* extension reloaded */ }
+  }
+
+  function clearPosition() {
+    try {
+      chrome.storage.local.get(POS_KEY, (r) => {
+        if (!r?.[POS_KEY]?.[currentPageKey()]) return;
+        chrome.storage.local.set({ [POS_KEY]: window.VoxPositions.removePosition(r[POS_KEY], currentPageKey()) });
+      });
+    } catch (_) {}
+  }
+
+  function hideResume() {
+    $('vox-resume')?.classList.add('vs-hidden');
+  }
+
+  function offerResume() {
+    if (S.speaking || S.paused || getFocusReaderShadow()) return;
+    try {
+      chrome.storage.local.get(POS_KEY, (r) => {
+        const entry = r?.[POS_KEY]?.[currentPageKey()];
+        if (!window.VoxPositions.shouldOfferResume(entry) || S.speaking || S.paused) return;
+        _resumeEntry = entry;
+        $('vox-resume-text').textContent = `Resume from ${Math.round(entry.pct * 100)}%?`;
+        $('vox-resume').classList.remove('vs-hidden');
+      });
+    } catch (_) {}
+  }
+
+  function resumeFromSaved() {
+    const entry = _resumeEntry;
+    hideResume();
+    if (!entry) return;
+    prepareAndRewrap(() => {
+      let idx = window.VoxPositions.wordFromEntry(entry, S.words.length);
+      if (entry.anchor) {
+        const found = findWordIdxForText(entry.anchor, Math.max(0, idx - 200));
+        if (found >= 0) idx = found;
+      }
+      S.followPaused = false;
+      speakFrom(idx);
+    });
+  }
+
+  function startOver() {
+    hideResume();
+    clearPosition();
+    prepareAndRewrap(() => { S.followPaused = false; speakFrom(0); });
+  }
+
+  // ── Keyboard while reading (no modifiers, never while typing) ──────────────
+  function isTypingTarget(e) {
+    const t = e.composedPath()[0];
+    if (!t || t.nodeType !== 1) return false;
+    if (t.isContentEditable) return true;
+    return /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName);
+  }
+
+  function stepSpeed(dir) {
+    const list = window.VoxPlayerUI.SPEEDS;
+    let next = S.speed;
+    if (dir > 0) next = list.find((v) => v > S.speed + 0.001) ?? list[list.length - 1];
+    else next = [...list].reverse().find((v) => v < S.speed - 0.001) ?? list[0];
+    setSpeed(next);
+    setStatus(`Speed ${window.VoxPlayerUI.speedLabel(next)}`, true);
+  }
+
+  document.addEventListener('keydown', (e) => {
+    if (!S.speaking && !S.paused) return;
+    if (e.altKey || e.ctrlKey || e.metaKey || e.isComposing) return;
+    if (isTypingTarget(e)) return;
+    const t = e.composedPath()[0];
+    if (e.key === ' ' && t?.tagName === 'BUTTON') return; // let the focused button click
+    switch (e.key) {
+      case ' ': pauseResume(); break;
+      case 'ArrowLeft': skipBack(); break;
+      case 'ArrowRight': skipFwd(); break;
+      case '[': case '-': case '_': stepSpeed(-1); break;
+      case ']': case '+': case '=': stepSpeed(1); break;
+      default: return;
+    }
+    e.preventDefault();
+    e.stopPropagation();
+  }, true);
+
+  // ── "Back to reading" pill ────────────────────────────────────────────────
+  // Manual scrolling while reading pauses auto-follow; the pill brings it back.
+  let _pillRaf = 0;
+  function currentWordEl() {
+    const el = S.words[S.currentWord]?.el;
+    return el && el.isConnected ? el : null;
+  }
+  function wordOffscreen(el) {
+    const r = el.getBoundingClientRect();
+    return r.bottom < 0 || r.top > window.innerHeight - 110;
+  }
+  function updateBackPill() {
+    _pillRaf = 0;
+    const pill = $('vox-back-to-reading');
+    if (!pill) return;
+    const el = (S.speaking || S.paused) ? currentWordEl() : null;
+    const off = !!el && wordOffscreen(el);
+    if (el && !off) S.followPaused = false;
+    pill.classList.toggle('vs-hidden', !off);
+  }
+  function scheduleBackPill() {
+    if (!_pillRaf) _pillRaf = requestAnimationFrame(updateBackPill);
+  }
+  function onUserScrollIntent() {
+    if (S.speaking || S.paused) { S.followPaused = true; scheduleBackPill(); }
+  }
+  window.addEventListener('wheel', onUserScrollIntent, { capture: true, passive: true });
+  window.addEventListener('touchmove', onUserScrollIntent, { capture: true, passive: true });
+  window.addEventListener('keydown', (e) => {
+    if (['PageUp', 'PageDown', 'Home', 'End', 'ArrowUp', 'ArrowDown'].includes(e.key) && !isTypingTarget(e)) onUserScrollIntent();
+  }, true);
+  document.addEventListener('scroll', scheduleBackPill, true);
+  let _focusScrollBound = null;
+  function watchForeignScroll() {
+    const fr = getFocusReaderShadow();
+    if (fr && _focusScrollBound !== fr) {
+      fr.addEventListener('scroll', scheduleBackPill, true);
+      _focusScrollBound = fr;
+    }
+  }
+  function backToReading() {
+    S.followPaused = false;
+    const el = currentWordEl();
+    if (el) scrollWordIntoView(el);
+    $('vox-back-to-reading')?.classList.add('vs-hidden');
+  }
+
+  // ── Text handed over by another extension (chrome.runtime.onMessageExternal) ──
+  function wordsMatchAt(i, parts) {
+    const norm = (x) => x.replace(/\W/g, '').toLowerCase();
+    const n = Math.min(parts.length, 12);
+    if (i < 0 || i + n > S.words.length) return false;
+    for (let j = 0; j < n; j++) if (norm(S.words[i + j].text) !== norm(parts[j])) return false;
+    return true;
+  }
+
+  async function readExternalText(text, title) {
+    const parts = String(text || '').split(/\s+/).filter(Boolean);
+    if (!parts.length) return;
+    stop(false);
+    hideResume();
+    // Prefer highlighting the text where it is shown (page or Focus Reader view).
+    let found = -1;
+    await prepareAndRewrap(() => {
+      const idx = S.words.length ? findWordIdxForText(parts.slice(0, 8).join(' ')) : -1;
+      if (wordsMatchAt(idx, parts)) found = idx;
+    });
+    S.readTitle = title || '';
+    if (found >= 0) {
+      setStatus('Reading…', true);
+      speakFrom(found, Math.min(found + parts.length - 1, S.words.length - 1));
+      return;
+    }
+    // Not on the page: read it with the player, without in-page highlighting.
+    unwrap();
+    S.words = parts.map((t) => ({ text: t, el: null }));
+    buildSentences();
+    setStatus('Reading shared text…', true);
+    speakFrom(0, S.words.length - 1);
   }
 
   // ── Message + keyboard ─────────────────────────────────────────────────────
@@ -2526,7 +2855,7 @@
 
     if (msg.action === 'command_play_pause') {
       ensurePlayerReady(() => {
-        if (!S.speaking && !S.paused) document.getElementById('vox-playpause-bar')?.click();
+        if (!S.speaking && !S.paused) $('vox-playpause-bar')?.click();
         else pauseResume();
       });
       return;
@@ -2553,18 +2882,55 @@
 
     // Kokoro responses from offscreen (routed through SW)
     if (msg.action === 'kokoro_chunk') {
-      if (!S.speaking) return; // stale chunk from a stopped session
-      applyKokoroChunk(msg);
-      setStatus('Playing', true);
-      updatePlayBtn();
+      onKokoroChunk(msg);
+      return;
+    }
+
+    if (msg.action === 'kokoro_offscreen_lost') {
+      // The browser closed the offscreen document mid-read: pick up at the current sentence.
+      S.kokoroBackend = '';
+      if (S.voiceEngine !== 'kokoro' || !S.speaking || S.paused) return;
+      const si = getSentenceIdx(S.currentWord);
+      const from = si >= 0 ? Math.max(S.sentences[si].start, S.speakStartIdx ?? 0) : S.currentWord;
+      setStatus('Reconnecting AI voice…', true);
+      S.currentWord = from;
+      speakFrom(from, S.speakEndIdx);
+      return;
+    }
+
+    if (msg.action === 'kokoro_resume_failed') {
+      // Offscreen doc was recycled during a long pause: restart at the current sentence.
+      if (!S.speaking || S.paused || S.voiceEngine !== 'kokoro') return;
+      const si = getSentenceIdx(S.currentWord);
+      const from = si >= 0 ? Math.max(S.sentences[si].start, S.speakStartIdx ?? 0) : S.currentWord;
+      S.currentWord = from;
+      speakFrom(from, S.speakEndIdx);
+      return;
+    }
+
+    if (msg.action === 'kokoro_media') {
+      // Media keys / Now Playing controls, routed from the offscreen document.
+      if (msg.key === 'play' && S.paused) pauseResume();
+      else if (msg.key === 'pause' && S.speaking && !S.paused) pauseResume();
+      else if (msg.key === 'next') skipFwd();
+      else if (msg.key === 'prev') skipBack();
+      else if (msg.key === 'stop') stop(false);
+      return;
+    }
+
+    if (msg.action === 'vox_read_text') {
+      ensurePlayerReady(() => { readExternalText(msg.text, msg.title).catch(() => {}); });
       return;
     }
 
     if (msg.action === 'kokoro_end') {
-      stopTicker(); clearHL();
+      if (msg.session != null && msg.session !== S.kokoroSession) return;
+      const finishedWholePage = S.trackPosition && S.speakEndIdx == null;
+      stopTicker(); clearHL(); clearChunkTimers();
       clearIframeHighlights();
+      if (finishedWholePage) clearPosition();
       S.lastKokoroChunk = null;
-      S.speaking = false; S.paused = false; S.speakEndIdx = null;
+      S.speaking = false; S.paused = false; S.speakEndIdx = null; S.speakStartIdx = null;
       document.documentElement.classList.remove('vox-reading');
       updatePlayBtn(); setStatus('Done'); S.currentWord = 0;
       maybeRunPendingExport();
@@ -2572,6 +2938,8 @@
     }
 
     if (msg.action === 'kokoro_ready') {
+      if (msg.backend) S.kokoroBackend = msg.backend;
+      syncDeviceUI();
       S.kokoroModelCached = true; S.kokoroLoading = false;
       S.kokoroDownloadPct = 100;
       saveKokoroFlag();
@@ -2649,7 +3017,7 @@
       setStatus(`Saved ${msg.filename || 'export.wav'}`);
       if (S.playAfterExport) {
         S.playAfterExport = false;
-        setTimeout(() => document.getElementById('vox-playpause-bar')?.click(), 150);
+        setTimeout(() => $('vox-playpause-bar')?.click(), 150);
       }
       return;
     }
@@ -2691,7 +3059,7 @@
     if (shortcutKeyMatches(e, S.shortcuts.play)) {
       e.preventDefault();
       ensurePlayerReady(() => {
-        if (!S.speaking && !S.paused) document.getElementById('vox-playpause-bar')?.click();
+        if (!S.speaking && !S.paused) $('vox-playpause-bar')?.click();
         else pauseResume();
       });
     }
