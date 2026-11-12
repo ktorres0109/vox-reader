@@ -14,6 +14,11 @@ echo "Downloading kokoro-js v${KOKORO_JS_VER} (browser bundle)..."
 curl -#L "https://cdn.jsdelivr.net/npm/kokoro-js@${KOKORO_JS_VER}/dist/kokoro.web.js" \
   -o "$VENDOR/kokoro.web.js"
 
+# The bundle points ONNX Runtime at the jsdelivr CDN for its wasm glue. Extension
+# CSP blocks remote scripts and Vox must work offline, so resolve it next to the
+# bundle instead (vendor/ort-wasm-simd-threaded.jsep.{mjs,wasm}, fetched below).
+node "$SCRIPT_DIR/patch-kokoro-wasm-path.mjs" "$VENDOR/kokoro.web.js"
+
 echo ""
 echo "Done! Saved to vendor/kokoro.web.js"
 echo "Size: $(du -h "$VENDOR/kokoro.web.js" | cut -f1)"
