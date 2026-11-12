@@ -6,6 +6,10 @@ node tools/chat-read-scope.test.mjs
 node tools/export-range.test.mjs
 node tools/mp3.test.mjs
 node tools/sentences.test.mjs
+node tools/text-clean.test.mjs
+node tools/positions.test.mjs
+node tools/playback-math.test.mjs
+node tools/patch-kokoro-wasm-path.test.mjs
 node tools/extension-id.test.mjs
 node tools/pack.test.mjs
 node tools/download.test.mjs
