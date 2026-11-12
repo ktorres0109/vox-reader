@@ -67,8 +67,44 @@ async function warmVoice(voice, tabId) {
   } catch (_) { /* voice file fetch may fail offline — speak will retry */ }
 }
 
-async function loadModel(tabId, voice) {
+// Backends, fastest first. WebGPU runs Kokoro well faster than real time
+// and keeps this document's only thread free; it needs the fp32 weights
+// (~330 MB, cached after the first download). wasm q8 (~88 MB) runs on one
+// CPU thread at roughly 1.3-2x real time. Any WebGPU failure (no adapter,
+// offline without the fp32 weights cached, shader error) falls back to wasm.
+const BACKENDS = {
+  webgpu: { device: 'webgpu', dtype: 'fp32' },
+  wasm: { device: 'wasm', dtype: 'q8' },
+};
+let devicePref = 'auto';   // 'auto' | 'wasm'
+let activeBackend = null;  // 'webgpu' | 'wasm' once loaded
+const backendErrors = {};
+
+function backendPlan() {
+  return devicePref !== 'wasm' && navigator.gpu ? ['webgpu', 'wasm'] : ['wasm'];
+}
+
+async function loadBackend(name, thisGen, progress) {
+  const { device, dtype } = BACKENDS[name];
+  if (device === 'webgpu' && !(await navigator.gpu.requestAdapter())) throw new Error('no WebGPU adapter');
+  const model = await KokoroTTS.from_pretrained(MODEL_ID, { dtype, device, progress_callback: progress });
+  if (thisGen !== loadGeneration) throw new Error('Download cancelled');
+  // Prove the backend actually produces audio before trusting it.
+  const probe = await model.generate('Ready.', { voice: currentVoice, speed: 1 });
+  const samples = probe?.audio || probe?.data;
+  if (!samples || samples.length < 1000) throw new Error(`${name} produced no audio`);
+  return model;
+}
+
+async function loadModel(tabId, voice, pref) {
   if (voice) currentVoice = voice;
+  if (pref === 'auto' || pref === 'wasm') {
+    if (pref !== devicePref && tts && activeBackend === 'webgpu' && pref === 'wasm') {
+      tts = null; // user asked for CPU only: reload on wasm
+      activeBackend = null;
+    }
+    devicePref = pref;
+  }
   if (tts) {
     await warmVoice(currentVoice, tabId);
     return;
@@ -76,18 +112,29 @@ async function loadModel(tabId, voice) {
   if (modelLoadingPromise) return modelLoadingPromise;
 
   const thisGen = ++loadGeneration;
-  const p = KokoroTTS.from_pretrained(MODEL_ID, {
-    dtype: 'q8',
-    device: 'wasm',
-    progress_callback: (data) => {
-      if (thisGen !== loadGeneration) return;
-      if (loadWaiters.size) {
-        for (const tid of loadWaiters) reportProgress(tid, data);
-      } else {
-        reportProgress(tabId, data);
+  const progress = (data) => {
+    if (thisGen !== loadGeneration) return;
+    if (loadWaiters.size) {
+      for (const tid of loadWaiters) reportProgress(tid, data);
+    } else {
+      reportProgress(tabId, data);
+    }
+  };
+  const p = (async () => {
+    let lastErr = null;
+    for (const name of backendPlan()) {
+      try {
+        const model = await loadBackend(name, thisGen, progress);
+        activeBackend = name;
+        return model;
+      } catch (err) {
+        if (thisGen !== loadGeneration || err.message === 'Download cancelled') throw err;
+        backendErrors[name] = String(err?.message || err);
+        lastErr = err;
       }
-    },
-  }).then(async (model) => {
+    }
+    throw lastErr || new Error('No TTS backend available');
+  })().then(async (model) => {
     if (thisGen !== loadGeneration) throw new Error('Download cancelled');
     tts = model;
     if (modelLoadingPromise === p) modelLoadingPromise = null;
@@ -112,8 +159,16 @@ function getAudioCtx() {
   return audioCtx;
 }
 
+// Yield a real task (not a microtask) so runtime messages (pause, stop, seek)
+// and the scheduler loop get the thread between syntheses. Single-threaded
+// wasm inference otherwise starves the document for the whole lookahead.
+function yieldTask() {
+  if (globalThis.scheduler?.yield) return globalThis.scheduler.yield();
+  return new Promise((r) => setTimeout(r, 0));
+}
+
 function queueSynth(fn) {
-  const run = synthChain.then(fn);
+  const run = synthChain.then(yieldTask).then(fn);
   synthChain = run.catch(() => {});
   return run;
 }
@@ -122,13 +177,16 @@ function cacheKey(text, speed, voice) {
   return `${voice || currentVoice}|${speed}|${text}`;
 }
 
-async function synthesizeToBuffer(text, speed = 1.0, voice) {
+/** @param {() => boolean} [stillWanted] checked right before synthesis starts; a
+ *  stopped or re-seeked read must not keep the (single-threaded) engine busy. */
+async function synthesizeToBuffer(text, speed = 1.0, voice, stillWanted) {
   const rate = Math.max(0.5, Math.min(3.0, speed || 1));
   const v = voice || currentVoice;
   const key = cacheKey(text, rate, v);
   if (synthCache.has(key)) return synthCache.get(key);
 
   const audio = await queueSynth(async () => {
+    if (stillWanted && !stillWanted()) throw new Error('superseded');
     const t0 = performance.now();
     const out = await tts.generate(text, { voice: v, speed: rate });
     synthStats.push({ ms: Math.round(performance.now() - t0), chars: text.length });
@@ -175,7 +233,7 @@ function isLive(sess) {
 function entryFor(sess, i) {
   if (!sess.pending.has(i)) {
     const s = sess.sentences[i];
-    sess.pending.set(i, synthesizeToBuffer(s.text, sess.speed, sess.voice));
+    sess.pending.set(i, synthesizeToBuffer(s.text, sess.speed, sess.voice, () => isLive(sess)));
   }
   return sess.pending.get(i);
 }
@@ -208,7 +266,7 @@ function pendingAudio(sess) {
 async function runSession(sess) {
   if (!tts) {
     try {
-      await loadModel(sess.tabId, sess.voice);
+      await loadModel(sess.tabId, sess.voice, sess.device);
     } catch (err) {
       if (isLive(sess)) {
         send({ action: 'kokoro_error', error: err.message, tabId: sess.tabId });
@@ -241,12 +299,6 @@ async function runSession(sess) {
     // Backpressure: keep at most one chunk queued behind the one playing.
     while (pendingAudio(sess) >= 2) {
       await sleep(80);
-      if (!isLive(sess)) return;
-    }
-    // Startup: a short first chunk (e.g. a heading) would finish before the next
-    // sentence is synthesized, leaving a gap. Give the next one a head start.
-    if (i === 0 && entry.duration < 2.5 && sess.sentences.length > 1) {
-      await Promise.race([entryFor(sess, 1).catch(() => {}), sleep(1500)]);
       if (!isLive(sess)) return;
     }
     const when = Math.max(nextWhen, ctx.currentTime + SCHEDULE_LEAD_SEC);
@@ -307,6 +359,7 @@ function startSession(msg) {
     sentences: msg.sentences || [],
     speed: msg.speed || 1.0,
     voice: msg.voice || currentVoice,
+    device: msg.device,
     scheduled: [],
     pending: new Map(),
     paused: false,
@@ -404,14 +457,30 @@ async function exportAudio(sentences, tabId, speed, voice, exportGen, filename, 
 
 chrome.runtime.sendMessage({ action: 'offscreen_ready' }).catch(() => {});
 
+// Lifeline to the service worker: if the browser closes this document, the
+// port disconnects and the SW tells the reading tab to resume elsewhere.
+function connectLifeline() {
+  try {
+    const port = chrome.runtime.connect({ name: 'vox-offscreen' });
+    port.onDisconnect.addListener(() => setTimeout(connectLifeline, 500)); // SW restarted
+  } catch (_) { setTimeout(connectLifeline, 2000); }
+}
+connectLifeline();
+
+/** A control message for an older read (it raced a newer kokoro_speak). */
+function isStale(msg) {
+  return msg.session != null && session && session.clientSession != null && msg.session < session.clientSession;
+}
+
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.target !== 'offscreen') return;
+  if ((msg.action === 'kokoro_stop' || msg.action === 'kokoro_pause' || msg.action === 'kokoro_resume') && isStale(msg)) return;
 
   if (msg.action === 'kokoro_load') {
     const tabId = msg.tabId;
     if (msg.voice) currentVoice = msg.voice;
     if (tabId) loadWaiters.add(tabId);
-    const loading = loadModel(tabId, msg.voice);
+    const loading = loadModel(tabId, msg.voice, msg.device);
     // loadModel bumps loadGeneration synchronously when it starts a download, so
     // read it afterwards; a later bump means this load was cancelled.
     const loadGen = loadGeneration;
@@ -419,7 +488,7 @@ chrome.runtime.onMessage.addListener((msg) => {
       .then(() => {
         if (tabId) loadWaiters.delete(tabId);
         if (loadGen !== loadGeneration && !tts) return;
-        send({ action: 'kokoro_ready', tabId });
+        send({ action: 'kokoro_ready', tabId, backend: activeBackend });
       })
       .catch((err) => {
         if (tabId) loadWaiters.delete(tabId);
@@ -527,6 +596,10 @@ chrome.runtime.onMessage.addListener((msg) => {
         ctxTime: audioCtx?.currentTime || 0,
         session: s ? { paused: s.paused, scheduled: s.scheduled.map((x) => ({ i: x.index, when: x.when, d: x.duration })) } : null,
         media: media.describe(),
+        backend: activeBackend,
+        devicePref,
+        backendErrors,
+        webgpuAvailable: !!navigator.gpu,
         crossOriginIsolated: self.crossOriginIsolated === true,
         threads: navigator.hardwareConcurrency,
         synth: synthStats.slice(-8),
