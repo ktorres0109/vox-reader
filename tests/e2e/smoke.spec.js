@@ -839,6 +839,8 @@ test.describe('Vox Reader smoke', () => {
 
       const popup = await context.newPage();
       await popup.goto(`chrome-extension://${extensionId}/popup/popup.html`);
+      // The popup opened as a tab would otherwise target itself as the active tab.
+      await page.bringToFront();
       await popup.locator('#open-player').click();
       await expect(page.locator('#vox-player')).toBeVisible({ timeout: 10_000 });
     } finally {

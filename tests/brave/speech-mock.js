@@ -43,10 +43,21 @@
     resume() { fake.paused = false; },
     addEventListener() {}, removeEventListener() {},
   };
+  // The mock voices are plain objects, which a real SpeechSynthesisUtterance
+  // rejects (voice must be a SpeechSynthesisVoice), so mock the utterance too.
+  class FakeUtterance {
+    constructor(text) {
+      this.text = text || ''; this.rate = 1; this.pitch = 1; this.volume = 1; this.lang = ''; this.voice = null;
+      this.onstart = this.onend = this.onerror = this.onboundary = this.onpause = this.onresume = null;
+    }
+    addEventListener() {}
+    removeEventListener() {}
+  }
   let ok = false;
   try {
     Object.defineProperty(window, 'speechSynthesis', { get: () => fake, configurable: true });
-    ok = window.speechSynthesis === fake;
+    Object.defineProperty(window, 'SpeechSynthesisUtterance', { value: FakeUtterance, configurable: true, writable: true });
+    ok = window.speechSynthesis === fake && window.SpeechSynthesisUtterance === FakeUtterance;
   } catch (_) { ok = false; }
   if (ok) document.documentElement.dataset.voxSpeechMock = '1';
 })();
