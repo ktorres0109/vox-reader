@@ -2999,6 +2999,9 @@
       if (S.voiceEngine === 'kokoro' && !S.kokoroModelCached) {
         setKokoroUIState('error');
       }
+      // A cancelled load can report back after the user already started
+      // something else (e.g. switched to Classic and pressed Play).
+      if (S.speaking) return;
       setStatus(wasPendingExport ? 'Export cancelled' : 'Download cancelled');
       return;
     }
