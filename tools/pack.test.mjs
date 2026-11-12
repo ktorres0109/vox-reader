@@ -20,4 +20,8 @@ assert.ok(!listing.includes('.DS_Store'), 'zip should not include macOS metadata
 assert.ok(!listing.includes('.cursor/'), 'zip should not include editor configuration');
 assert.ok(listing.includes('manifest.json'), 'zip should include manifest.json');
 
+const packed = JSON.parse(execSync(`unzip -p "${zipPath}" manifest.json`, { encoding: 'utf8' }));
+assert.equal(packed.key, undefined, 'store zip must not carry the dev-only manifest key');
+assert.equal(packed.version, JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'utf8')).version);
+
 console.log('pack.test.mjs: ok');

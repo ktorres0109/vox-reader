@@ -84,5 +84,16 @@ try {
   process.exit(1);
 }
 
+// The manifest "key" only pins the unpacked extension ID (see README); the Chrome
+// Web Store rejects uploads that contain it, so the packed manifest drops it.
+const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'utf8'));
+if (manifest.key) {
+  delete manifest.key;
+  const stage = fs.mkdtempSync(path.join(distDir, 'manifest-'));
+  fs.writeFileSync(path.join(stage, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
+  execSync(`cd "${stage}" && zip -q "${outZip}" manifest.json`, { stdio: 'inherit', shell: '/bin/bash' });
+  fs.rmSync(stage, { recursive: true, force: true });
+}
+
 const size = fs.statSync(outZip).size;
 console.log(`pack: wrote ${outZip} (${(size / 1024 / 1024).toFixed(2)} MB)`);

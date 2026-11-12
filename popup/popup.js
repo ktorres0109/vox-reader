@@ -1,4 +1,11 @@
-const CONTENT_FILES = ['content/content.js'];
+const CONTENT_FILES = [
+  'content/lib/text-clean.js',
+  'content/lib/positions.js',
+  'content/lib/playback-math.js',
+  'content/player-styles.js',
+  'content/player.js',
+  'content/content.js',
+];
 const CONTENT_CSS = ['content/content.css'];
 
 const PRIVACY_URL = 'https://ktorres0109.github.io/vox-reader/privacy.html';

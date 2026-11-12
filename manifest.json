@@ -2,7 +2,8 @@
   "manifest_version": 3,
   "name": "Vox Reader",
   "short_name": "Vox Reader",
-  "version": "2.6.4",
+  "version": "2.7.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtw8TowFr3fWk6eqSlGmhhdsD3Goivci92nlu0hMkX1ks3VUM02/XvEsWdEQ89nyncMXbLg+aKN3tjBhOZGG4gaQweiu8NePxAFZTIb3qNPetKbn8tsqwCCB2QsyYoPeYsk9hnMAi/rupSDehY9uFORfS3LKH6umuRAuBn6UIZFjxw+x8FBZ+PR4kFk4Sur8QrSxgKfevEgloPKfj6GsSqRNA1suEexevI3+O7J+J02jWyppQeFsCObrR+XX6rngvzm401tca83fy4FfKR5GZTL4IMw5EVJjAuoU+2QaPANbwbFWblCysdHX9ALbVLIuWaqWnW1f/ZYIWHrk+O2MilQIDAQAB",
   "minimum_chrome_version": "116",
   "description": "Read any webpage aloud with word highlighting. Default AI voice: Bella (Kokoro 82M). Free, private, works on ChatGPT, Claude, and Gemini.",
   "icons": {
@@ -71,6 +72,11 @@
         "<all_urls>"
       ],
       "js": [
+        "content/lib/text-clean.js",
+        "content/lib/positions.js",
+        "content/lib/playback-math.js",
+        "content/player-styles.js",
+        "content/player.js",
         "content/content.js"
       ],
       "css": [
